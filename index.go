@@ -8,6 +8,20 @@ import (
 	"github.com/pkg/errors"
 )
 
+/*
+index
++----------+--------------+---+--------------+
+|Meta (16B)|Record 1 (16B)|...|Record N (16B)|
++----------+--------------+---+--------------+
+indexMeta
++---------------+----------------+
+|Total keys (8B)|Active keys (8B)|
++---------------+----------------+
+indexRecord
++---------------+----------------+
+|Hash key (8B)  |Data seek (8B)  |
++---------------+----------------+
+*/
 const (
 	idxMetaLength = 16
 	fsMode        = os.O_RDWR | os.O_CREATE
@@ -50,6 +64,8 @@ func (p *indexMeta) Parse(b []byte) error {
 }
 
 type indexRecord struct {
+	hash uint64
+	seek uint64
 }
 type index struct {
 	meta *indexMeta
@@ -108,4 +124,7 @@ func (idx *index) writeMeta() error {
 		return errors.New("write length error")
 	}
 	return nil
+}
+
+func (idx *index) Write(hash, seek uint64) error {
 }
