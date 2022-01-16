@@ -27,6 +27,12 @@ func TestFnvHashSum64(t *testing.T) {
 	}
 }
 
+func stdLibFnvSum32(key string) uint32 {
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	return h.Sum32()
+}
+
 func stdLibFnvSum64(key string) uint64 {
 	h := fnv.New64a()
 	h.Write([]byte(key))
@@ -42,5 +48,23 @@ func BenchmarkFnvHashSum64(b *testing.B) {
 func BenchmarkFnvHashStdLibSum64(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		stdLibFnvSum64(testCases[4].text)
+	}
+}
+
+func BenchmarkFnv32a(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		fnv32a("aaaaaaaaaaaaaaaa")
+	}
+}
+
+func BenchmarkFnvHashStdLibSum32(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		stdLibFnvSum32(testCases[4].text)
+	}
+}
+
+func BenchmarkSum32WithSeed(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		Sum32WithSeed([]byte("aaaaaaaaaaaaaaaa"), 23456)
 	}
 }
