@@ -33,13 +33,23 @@ type indexRecord struct {
 }
 
 func (r *indexRecord) Bytes() []byte {
-	b := acquireByte20Pool()
-	defer releaseByte20Pool(b)
+	b := acquireByte20()
+	defer releaseByte20(b)
 	intconv.PutUint32(b[0:4], r.keyHash)
 	intconv.PutUint64(b[4:12], r.dataOffset)
 	intconv.PutUint32(b[12:16], r.dataSize)
 	intconv.PutUint32(b[16:20], r.dataCRC32)
 	return b
+}
+
+func newIndexRecord(keyHash uint32, dataOffset uint64, dataSize uint32, dataCRC32 uint32) *indexRecord {
+	ir := acquireIndexRecord()
+	defer releaseIndexRecord(ir)
+	ir.keyHash = keyHash
+	ir.dataOffset = dataOffset
+	ir.dataSize = dataSize
+	ir.dataCRC32 = dataCRC32
+	return ir
 }
 
 func parseIndexRecord(b []byte) (*indexRecord, error) {
@@ -150,8 +160,8 @@ func (idx *index) GetRecord(recordID uint32) (*indexRecord, error) {
 	if recordID > idx.totalKeys {
 		return nil, errors.New("error recordID")
 	}
-	buf := acquireByte20Pool()
-	defer releaseByte20Pool(buf)
+	buf := acquireByte20()
+	defer releaseByte20(buf)
 	offset := recordID * idxRecordSize
 	_, err := idx.file.ReadAt(buf, int64(offset))
 	if err != nil {
