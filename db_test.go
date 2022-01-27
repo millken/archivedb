@@ -3,6 +3,8 @@ package archivedb
 import (
 	"testing"
 
+	"math"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -37,7 +39,7 @@ func TestDB2(t *testing.T) {
 }
 func TestA(t *testing.T) {
 	require := require.New(t)
-	require.Equal(1, 40<<20)
+	require.Equal(math.MaxUint32, 1<<24)
 }
 
 func BenchmarkDBGet(b *testing.B) {

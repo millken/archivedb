@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/pkg/errors"
+	"github.com/tidwall/bfile"
 )
 
 /*
@@ -69,6 +70,7 @@ type index struct {
 	totalKeys   uint32
 	activeKeys  uint32
 	file        *os.File
+	pager       *bfile.Pager
 	hashmap     map[uint32]uint32
 	hashmapLock sync.RWMutex
 }
@@ -78,8 +80,10 @@ func openIndex(opt *indexOptions) (*index, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "open index file")
 	}
+	pager := bfile.NewPager(file)
 	idx := &index{
 		file:    file,
+		pager:   pager,
 		hashmap: make(map[uint32]uint32),
 	}
 
@@ -163,7 +167,7 @@ func (idx *index) GetRecord(recordID uint32) (*indexRecord, error) {
 	buf := acquireByte20()
 	defer releaseByte20(buf)
 	offset := recordID * idxRecordSize
-	_, err := idx.file.ReadAt(buf, int64(offset))
+	_, err := idx.pager.ReadAt(buf, int64(offset))
 	if err != nil {
 		return nil, err
 	}

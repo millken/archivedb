@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/pkg/errors"
+	"github.com/tidwall/bfile"
 )
 
 var (
@@ -15,7 +16,7 @@ var (
 type DB struct {
 	mu        sync.RWMutex
 	index     *index
-	storage   *os.File
+	storage   *bfile.Pager
 	endOffset int64
 }
 
@@ -33,7 +34,7 @@ func Open(filePath string) (*DB, error) {
 	}
 	db := &DB{
 		index:   idx,
-		storage: file,
+		storage: bfile.NewPager(file),
 	}
 	ep, err := db.getEndOffset()
 	if err != nil {
@@ -96,7 +97,7 @@ func (db *DB) Close() error {
 	if err := db.index.Close(); err != nil {
 		return err
 	}
-	if err := db.storage.Close(); err != nil {
+	if err := db.storage.Flush(); err != nil {
 		return err
 	}
 	return nil
