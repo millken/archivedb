@@ -31,15 +31,15 @@ func HashFuncOption(h HashFunc) Option {
 	}
 }
 
-func FsyncOption() Option {
+func FsyncOption(fsync bool) Option {
 	return func(db *option) error {
-		db.fsync = true
+		db.fsync = fsync
 		return nil
 	}
 }
-func WriteVersionOption() Option {
+func WriteVersionOption(writeVersion bool) Option {
 	return func(db *option) error {
-		db.fsync = true
+		db.writeVersion = writeVersion
 		return nil
 	}
 }

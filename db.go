@@ -7,13 +7,19 @@ import (
 )
 
 const (
-	MaxKeySize = math.MaxUint16
+	MaxKeySize   = math.MaxUint16
+	MaxValueSize = math.MaxUint32
 )
 
 var (
-	ErrNotFound   = errors.New("Not Found")
-	ErrInvalidKey = errors.New("Invalid Key")
-	ErrKeySize    = errors.New("Key size is too large")
+	ErrKeyNotFound    = errors.New("key not found")
+	ErrEmptyKey       = errors.New("empty key")
+	ErrKeyTooLarge    = errors.New("key size is too large")
+	ErrKeyExpired     = errors.New("key expired")
+	ErrKeyMismatch    = errors.New("key mismatch")
+	ErrChecksumFailed = errors.New("checksum failed")
+	ErrValueTooLarge  = errors.New("value size is too large")
+	ErrLengthMismatch = errors.New("length mismatch")
 )
 
 type DB struct {
@@ -49,10 +55,13 @@ func Open(filePath string, options ...Option) (*DB, error) {
 	return db, nil
 }
 
-//Set sets the value of the key
-func (db *DB) Set(key, value []byte) error {
+//Put put the value of the key to the db
+func (db *DB) Put(key, value []byte) error {
 	if err := validateKey(key); err != nil {
 		return err
+	}
+	if len(value) > MaxValueSize {
+		return ErrValueTooLarge
 	}
 	entry := acquireEntry()
 	defer releaseEntry(entry)
@@ -62,8 +71,18 @@ func (db *DB) Set(key, value []byte) error {
 	if err := db.storage.writeEntry(entry); err != nil {
 		return err
 	}
+	if db.opts.fsync {
+		if err := db.storage.Sync(); err != nil {
+			return err
+		}
+	}
 	if err := db.index.Set(hashKey, off); err != nil {
 		return err
+	}
+	if db.opts.fsync {
+		if err := db.index.Sync(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -76,14 +95,14 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	hashKey := db.opts.hashFunc(key)
 	item, ok := db.index.Get(hashKey)
 	if !ok {
-		return nil, ErrNotFound
+		return nil, ErrKeyNotFound
 	}
 	entry, err := db.storage.readEntry(uint64(item.Offset()))
 	if err != nil {
 		return nil, err
 	}
-	if !entry.verify(key) {
-		return nil, ErrInvalidEntry
+	if err := entry.verify(key); err != nil {
+		return nil, err
 	}
 	return entry.Value, nil
 }
@@ -101,10 +120,10 @@ func (db *DB) Close() error {
 
 func validateKey(key []byte) error {
 	if len(key) == 0 {
-		return ErrInvalidKey
+		return ErrEmptyKey
 	}
 	if len(key) > MaxKeySize {
-		return ErrKeySize
+		return ErrKeyTooLarge
 	}
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/pkg/errors"
@@ -14,10 +15,6 @@ var (
 	currentTime        = time.Now
 	CastagnoliCrcTable = crc32.MakeTable(crc32.Castagnoli)
 
-	ErrInvalidEntry        = errors.New("invalid entry")
-	ErrEntryNotFound       = errors.New("entry not found")
-	ErrInvalidEntryKey     = errors.New("invalid entry key")
-	ErrInvalidEntryValue   = errors.New("invalid entry value")
 	ErrInvalidEntryHeader  = errors.New("invalid entry header")
 	ErrInvalidEntryVersion = errors.New("invalid entry version")
 )
@@ -29,6 +26,21 @@ const (
 	entryHeaderSize           = 20
 	bitDelete       entryMeta = 1 << 0 // Set if the key has been deleted.
 )
+
+var entryPool = &sync.Pool{
+	New: func() interface{} {
+		return NewEntry(nil, nil)
+	},
+}
+
+func acquireEntry() *Entry {
+	v := entryPool.Get().(*Entry)
+	return v
+}
+
+func releaseEntry(v *Entry) {
+	entryPool.Put(v)
+}
 
 type entryHeader struct {
 	ExpiresAt uint64
@@ -146,10 +158,17 @@ func (e *Entry) HasExpired() bool {
 	return e.Header.ExpiresAt > 0 && e.Header.ExpiresAt < uint64(currentTime().Unix())
 }
 
-func (e *Entry) verify(key []byte) bool {
-	return e.Header.KeyLen == uint16(len(e.Key)) &&
-		bytes.Equal(e.Key, key) &&
-		e.Header.ValueLen == uint32(len(e.Value))
+func (e *Entry) verify(key []byte) error {
+	if e.Header.KeyLen != uint16(len(e.Key)) || e.Header.ValueLen != uint32(len(e.Value)) {
+		return ErrLengthMismatch
+	}
+	if !bytes.Equal(e.Key, key) {
+		return ErrKeyMismatch
+	}
+	if e.Header.ValueCRC != crc32.Checksum(e.Value, CastagnoliCrcTable) {
+		return ErrChecksumFailed
+	}
+	return nil
 }
 
 func (e *Entry) String() string {
