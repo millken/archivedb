@@ -2,8 +2,6 @@ package archivedb
 
 import (
 	"os"
-	"path"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -11,27 +9,65 @@ import (
 
 func TestStorage(t *testing.T) {
 	require := require.New(t)
-	absPath, _ := filepath.Abs("./")
-	testFile := path.Join(absPath, "storage001.test")
+	testFile := "storage001.test"
 	defer os.Remove(testFile)
-	storage, err := initializeStorage(testFile)
+	storage, err := openStorage(testFile)
 	require.NoError(err)
 	require.NotNil(storage)
-	m, err := storage.readBlockMeta(32)
+	testEntry := []*Entry{
+		NewEntry([]byte("foo"), []byte("bar")),
+		NewEntry([]byte("foo1"), []byte("bar1")),
+		NewEntry([]byte("foo2"), []byte("bar2")),
+	}
+	for _, entry := range testEntry {
+		err = storage.writeEntry(entry)
+		require.NoError(err)
+	}
+	require.NoError(storage.Close())
+
+	storage, err = openStorage(testFile)
 	require.NoError(err)
-	require.Equal(uint32(32), m.keys)
+	require.NotNil(storage)
+	off := uint64(storageMetaSize)
+	for _, entry := range testEntry {
+		v, err := storage.readEntry(off)
+		require.NoError(err)
+		off += entry.Size()
+		require.Equal(entry, v)
+	}
 }
 
-type a struct {
-	a uint
+func BenchmarkStorageSet(b *testing.B) {
+	b.ReportAllocs()
+	require := require.New(b)
+	testFile := "storage002.test"
+	defer os.Remove(testFile)
+
+	storage, err := openStorage(testFile)
+	require.NoError(err)
+	e := NewEntry([]byte("foo"), []byte("bar"))
+	for i := 1; i < b.N; i++ {
+		storage.writeEntry(e)
+	}
 }
 
-func TestAAA(t *testing.T) {
-	aa := struct {
-		b []*a
-	}{}
-	aa.b = append(aa.b, &a{3})
-	t.Logf("%v", aa.b)
-	aa.b = nil
-	t.Logf("%v", aa.b)
+func BenchmarkStorageGet(b *testing.B) {
+	b.ReportAllocs()
+	require := require.New(b)
+	testFile := "storage003.test"
+	defer os.Remove(testFile)
+
+	storage, err := openStorage(testFile)
+	require.NoError(err)
+	e := NewEntry([]byte("foo"), []byte("bar"))
+	n := 1000
+	offs := make([]uint64, n)
+	for i := 0; i < n; i++ {
+		storage.writeEntry(e)
+		offs[i] = uint64(i) * e.Size()
+	}
+	b.ResetTimer()
+	for i := 1; i < b.N; i++ {
+		storage.readEntry(offs[i%n])
+	}
 }

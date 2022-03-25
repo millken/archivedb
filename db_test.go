@@ -1,54 +1,40 @@
 package archivedb
 
 import (
+	"os"
 	"testing"
-
-	"math"
 
 	"github.com/stretchr/testify/require"
 )
 
 func TestDB(t *testing.T) {
 	require := require.New(t)
-	db, err := Open("./test001.db")
+	testFile := "db001.test"
+	defer os.Remove(testFile)
+	defer os.Remove(testFile + ".idx")
+	db, err := Open(testFile)
 	require.NoError(err)
 	require.NotNil(db)
-	defer db.Close()
 	tests := []struct {
-		k []byte
-		v []byte
+		key, value []byte
 	}{
-		{[]byte("a1"), []byte("a1")},
-		{[]byte("a2"), []byte("a2")},
-		{[]byte("a3"), []byte("a3")},
+		{[]byte("foo"), []byte("bar")},
+		{[]byte("foo1"), []byte("bar1")},
+		{[]byte("foo2"), []byte("bar2")},
 	}
 	for _, test := range tests {
-		db.Set(test.k, test.v)
+		err = db.Set(test.key, test.value)
+		require.NoError(err)
 	}
-}
-
-func TestDB2(t *testing.T) {
-	require := require.New(t)
-	db, err := Open("./test001.db")
-	require.NoError(err)
-	require.NotNil(db)
-	defer db.Close()
-	r, err := db.Get([]byte("a1"))
-	require.NoError(err)
-	require.Equal(r, []byte("a1"))
-}
-func TestA(t *testing.T) {
-	require := require.New(t)
-	require.Equal(math.MaxUint32, 1<<24)
-}
-
-func BenchmarkDBGet(b *testing.B) {
-	require := require.New(b)
-	db, err := Open("./test001.db")
-	require.NoError(err)
-	require.NotNil(db)
-	defer db.Close()
-	for i := 0; i < b.N; i++ {
-		db.Get([]byte("a1"))
+	for _, test := range tests {
+		v, err := db.Get(test.key)
+		require.NoError(err)
+		require.Equal(test.value, v)
 	}
+
+	//test key not exist
+	v, err := db.Get([]byte("not_exist"))
+	require.ErrorIs(err, ErrNotFound)
+	require.Nil(v)
+	require.NoError(db.Close())
 }

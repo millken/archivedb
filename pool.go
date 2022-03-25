@@ -7,33 +7,48 @@ import (
 var byte20Pool = &sync.Pool{
 	New: func() interface{} {
 		b := make([]byte, 20)
-		return b
+		return &b
 	},
 }
 
-func acquireByte20() []byte {
-	b := byte20Pool.Get().([]byte)
+func acquireByte20() *[]byte {
+	b := byte20Pool.Get().(*[]byte)
 	return b
 }
 
-func releaseByte20(buf []byte) {
-	if cap(buf) > 20 {
+func releaseByte20(buf *[]byte) {
+	if cap(*buf) > 20 {
 		return
 	}
 	byte20Pool.Put(buf)
 }
 
-var indexRecordPool = &sync.Pool{
+var entryPool = &sync.Pool{
 	New: func() interface{} {
-		return new(indexRecord)
+		return NewEntry(nil, nil)
 	},
 }
 
-func acquireIndexRecord() *indexRecord {
-	v := indexRecordPool.Get().(*indexRecord)
+func acquireEntry() *Entry {
+	v := entryPool.Get().(*Entry)
 	return v
 }
 
-func releaseIndexRecord(v *indexRecord) {
-	indexRecordPool.Put(v)
+func releaseEntry(v *Entry) {
+	entryPool.Put(v)
+}
+
+var entryHeaderPool = &sync.Pool{
+	New: func() interface{} {
+		return new(entryHeader)
+	},
+}
+
+func acquireEntryHeader() *entryHeader {
+	v := entryHeaderPool.Get().(*entryHeader)
+	return v
+}
+
+func releaseEntryHeader(v *entryHeader) {
+	entryHeaderPool.Put(v)
 }

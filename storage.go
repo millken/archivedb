@@ -2,137 +2,155 @@ package archivedb
 
 import (
 	"os"
-	"sync"
+	"sync/atomic"
 
 	"github.com/pkg/errors"
+	"github.com/tidwall/bfile"
 )
 
-/*
-keyHash|keySeek|keyLen|CRC32
-uint32|uint64|uint32|uint32
-+---------------+----------------+---------------+----------+
-|Hash key (4B)  |Data seek (8B)  |Data len (4B)  |CRC32 (4B)|
-+---------------+----------------+---------------+----------+
-*/
+const (
+	storageMetaSize = 16
+)
 
 type storage struct {
-	lock    sync.RWMutex
-	file    *os.File
-	hashMap sync.Map
+	file      *os.File
+	pager     *bfile.Pager
+	endOffset int64
 }
 
-func initializeStorage(filePath string) (*storage, error) {
+func openStorage(filePath string) (*storage, error) {
 	file, err := os.OpenFile(filePath, fsMode, os.FileMode(0644))
 	if err != nil {
 		return nil, errors.Wrap(err, "opening storage")
 	}
-	s := &storage{
-		file: file,
-	}
-
 	stat, err := file.Stat()
 	if err != nil {
-		return nil, errors.Wrap(err, "stat storage")
+		return nil, errors.Wrap(err, "stat storage file")
 	}
-	if stat.Size() > 0 {
-		if err = s.loadData(); err != nil {
-			return nil, errors.Wrap(err, "load data")
+	s := &storage{
+		file:  file,
+		pager: bfile.NewPager(file),
+	}
+
+	if stat.Size() == 0 {
+		atomic.StoreInt64(&s.endOffset, storageMetaSize)
+		if err := s.writeMeta(); err != nil {
+			return nil, errors.Wrap(err, "write storage file")
 		}
 	}
+	if err := s.readMeta(); err != nil {
+		return nil, errors.Wrap(err, "read storage file")
+	}
+
 	return s, nil
 }
 
-func (s *storage) loadData() error {
-	s.lock.RLock()
-	defer s.lock.RUnlock()
-	for i := 0; i < blockNum; i++ {
-		meta, err := s.readBlockMeta(uint16(i))
-		if err != nil {
-			return err
-		}
-		if meta.keys == 0 {
-			continue
-		}
-		for j := 0; j < int(meta.keys); j++ {
-			var b [16]byte
-			offset := int64(meta.blockID*blockNum) + int64(blockMetaSize*blockNum) + int64(j*blockEntrySize)
-			n, err := s.file.ReadAt(b[:], offset)
-			if err != nil {
-				return err
-			}
-			if n != 16 {
-				return errors.New("read buffer length error !=16")
-			}
-		}
-	}
-	return nil
-}
-
-// func (s *storage) writeMeta(m *meta) error {
-// 	offset := int64(m.id) * blockMetaSize
-// 	// ret, err := s.file.Seek(offset, io.SeekStart)
-// 	// if err != nil {
-// 	// 	return err
-// 	// }
-// 	// fmt.Printf("%v", ret)
-// 	n, err := s.file.WriteAt(m.Bytes(), offset)
-// 	if err != nil {
-// 		return err
-// 	}
-// 	if n != blockMetaSize {
-// 		return errors.New("write meta error")
-// 	}
-// 	return nil
-// }
-
-func (s *storage) readBlockMeta(blockID uint16) (*blockMeta, error) {
-
-	b := acquireByte20()
-	defer releaseByte20(b)
-	offset := blockID * blockMetaSize
-	n, err := s.file.ReadAt(b, int64(offset))
+func (s *storage) readMeta() error {
+	var b [storageMetaSize]byte
+	n, err := s.pager.ReadAt(b[:], 0)
 	if err != nil {
-		return nil, errors.Wrap(err, "read block meta")
+		return err
 	}
-	if n != blockMetaSize {
-		return nil, errors.New("read block meta size error")
+	if n != storageMetaSize {
+		return errors.New("read storage meta error")
 	}
-	m := &blockMeta{}
-	if err = m.Parse(b); err != nil {
-		return nil, errors.Wrap(err, "parse block meta")
-	}
-	m.blockID = blockID
-	return m, nil
-}
-
-func (s *storage) writeBlocks() error {
-
+	atomic.StoreInt64(&s.endOffset, int64(intconv.Uint64(b[0:8])))
 	return nil
 }
 
-func (s *storage) insert(key, value string) error {
-	// keyHash := fnv32a(key)
-	// blockID := getBlockID(keyHash)
-
-	return nil
-}
-
-func (s *storage) hashExist(hash uint32, blockID uint16) (bool, error) {
-	s.lock.RLock()
-	defer s.lock.RUnlock()
-	meta, err := s.readBlockMeta(blockID)
+func (s *storage) writeMeta() error {
+	var b [storageMetaSize]byte
+	intconv.PutUint64(b[0:8], uint64(s.getEndOffset()))
+	//intconv.PutUint64(b[8:16], 0)
+	n, err := s.pager.WriteAt(b[:], 0)
 	if err != nil {
-		return false, err
+		return err
 	}
-	if meta.keys == 0 {
-		return false, nil
+	if n != storageMetaSize {
+		return errors.New("write storage meta error")
 	}
-	return false, nil
+	return nil
 }
 
-func (s *storage) readBlock(meta *blockMeta) (*blockMeta, error) {
-	s.lock.RLock()
-	defer s.lock.RUnlock()
+func (s *storage) getEndOffset() int64 {
+	return atomic.LoadInt64(&s.endOffset)
+}
 
-	return nil, nil
+func (s *storage) writeEntry(entry *Entry) error {
+	ehBuf := entry.Header.Encode()
+	stream := s.pager.Stream(s.getEndOffset())
+	n, err := stream.Write(ehBuf)
+	if err != nil {
+		return err
+	}
+	if n != entryHeaderSize {
+		return ErrInvalidEntryHeader
+	}
+	n, err = stream.Write(entry.Key)
+	if err != nil {
+		return err
+	}
+	if n != int(entry.Header.KeyLen) {
+		return ErrInvalidEntryHeader
+	}
+	n, err = stream.Write(entry.Value)
+	if err != nil {
+		return err
+	}
+	if n != int(entry.Header.ValueLen) {
+		return ErrInvalidEntryHeader
+	}
+	atomic.AddInt64(&s.endOffset, int64(entry.Size()))
+	return s.writeMeta()
+}
+
+func (s *storage) readEntry(offset uint64) (*Entry, error) {
+	ehBuf := make([]byte, entryHeaderSize)
+	n, err := s.pager.ReadAt(ehBuf, int64(offset))
+	if err != nil {
+		return nil, err
+	}
+	if n != entryHeaderSize {
+		return nil, ErrInvalidEntryHeader
+	}
+	eh := &entryHeader{}
+	err = eh.Decode(ehBuf)
+	if err != nil {
+		return nil, err
+	}
+
+	keyBuf := make([]byte, eh.KeyLen)
+	n, err = s.pager.ReadAt(keyBuf, int64(offset+entryHeaderSize))
+	if err != nil {
+		return nil, err
+	}
+	if n != int(eh.KeyLen) {
+		return nil, ErrInvalidEntryHeader
+	}
+
+	valueBuf := make([]byte, eh.ValueLen)
+	n, err = s.pager.ReadAt(valueBuf, int64(offset+entryHeaderSize+uint64(eh.KeyLen)))
+	if err != nil {
+		return nil, err
+	}
+	if n != int(eh.ValueLen) {
+		return nil, ErrInvalidEntryHeader
+	}
+	entry := &Entry{
+		Key:    keyBuf,
+		Value:  valueBuf,
+		Header: eh,
+	}
+	return entry, nil
+}
+
+func (s *storage) Sync() error {
+	return s.pager.Flush()
+}
+
+func (s *storage) Close() error {
+	if err := s.pager.Flush(); err != nil {
+		return err
+	}
+	return s.file.Close()
 }

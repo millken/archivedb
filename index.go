@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"github.com/pkg/errors"
 	"github.com/tidwall/bfile"
@@ -11,169 +12,167 @@ import (
 
 /*
 index record
-+---------------+----------------+---------------+----------+
-|Hash key (4B)  |Data seek (8B)  |Data len (4B)  |CRC32 (4B)|
-+---------------+----------------+---------------+----------+
++---------------+----------------+
+|Hash key (8B)  |Entry seek (8B) |
++---------------+----------------+
 */
 const (
-	idxMetaLength = 16
-	idxRecordSize = 20
+	idxRecordSize = 16
 	fsMode        = os.O_RDWR | os.O_CREATE
 )
 
 var intconv = binary.BigEndian
 
-type indexOptions struct {
-	filePath string
-}
-type indexRecord struct {
-	keyHash    uint32
-	dataOffset uint64
-	dataSize   uint32
-	dataCRC32  uint32
+type item struct {
+	id  int64
+	off int64
 }
 
-func (r *indexRecord) Bytes() []byte {
-	b := acquireByte20()
-	defer releaseByte20(b)
-	intconv.PutUint32(b[0:4], r.keyHash)
-	intconv.PutUint64(b[4:12], r.dataOffset)
-	intconv.PutUint32(b[12:16], r.dataSize)
-	intconv.PutUint32(b[16:20], r.dataCRC32)
-	return b
+func (it *item) Offset() int64 {
+	return it.off
 }
 
-func newIndexRecord(keyHash uint32, dataOffset uint64, dataSize uint32, dataCRC32 uint32) *indexRecord {
-	ir := acquireIndexRecord()
-	defer releaseIndexRecord(ir)
-	ir.keyHash = keyHash
-	ir.dataOffset = dataOffset
-	ir.dataSize = dataSize
-	ir.dataCRC32 = dataCRC32
-	return ir
-}
-
-func parseIndexRecord(b []byte) (*indexRecord, error) {
-	if cap(b) != blockMetaSize {
-		return nil, errors.New("parse block meta length error")
-	}
-	ir := acquireIndexRecord()
-	defer releaseIndexRecord(ir)
-	ir.keyHash = intconv.Uint32(b[0:4])
-	ir.dataOffset = intconv.Uint64(b[4:12])
-	ir.dataSize = intconv.Uint32(b[12:16])
-	ir.dataCRC32 = intconv.Uint32(b[16:20])
-	return ir, nil
+func (it *item) ID() int64 {
+	return it.id
 }
 
 type index struct {
-	totalKeys   uint32
-	activeKeys  uint32
 	file        *os.File
 	pager       *bfile.Pager
-	hashmap     map[uint32]uint32
+	hashmap     map[uint64]*item
 	hashmapLock sync.RWMutex
+	total       int64
 }
 
-func openIndex(opt *indexOptions) (*index, error) {
-	file, err := os.OpenFile(opt.filePath, fsMode, os.FileMode(0644))
+func openIndex(filePath string) (*index, error) {
+	file, err := os.OpenFile(filePath, fsMode, os.FileMode(0644))
 	if err != nil {
 		return nil, errors.Wrap(err, "open index file")
-	}
-	pager := bfile.NewPager(file)
-	idx := &index{
-		file:    file,
-		pager:   pager,
-		hashmap: make(map[uint32]uint32),
 	}
 
 	stat, err := file.Stat()
 	if err != nil {
 		return nil, errors.Wrap(err, "stat index file")
 	}
+	idx := &index{
+		file:  file,
+		pager: bfile.NewPager(file),
+	}
 	if stat.Size() == 0 {
-		return idx, nil
+		if err := idx.writeMeta(); err != nil {
+			return nil, errors.Wrap(err, "write index file")
+		}
 	}
-	idx.totalKeys = uint32(stat.Size()) / idxRecordSize
-	err = idx.readRecords()
-	if err != nil {
-		return nil, errors.Wrap(err, "read index records")
+	if err := idx.readMeta(); err != nil {
+		return nil, errors.Wrap(err, "read index file")
 	}
-	return idx, nil
+
+	return idx, idx.load(idx.Length())
 }
 
-func (idx *index) readRecords() error {
+func (idx *index) readMeta() error {
 	var b [idxRecordSize]byte
-	for i := 0; i < int(idx.totalKeys); i++ {
-		n, err := idx.file.ReadAt(b[:], int64(i*idxRecordSize))
+	n, err := idx.pager.ReadAt(b[:], 0)
+	if err != nil {
+		return err
+	}
+	if n != idxRecordSize {
+		return errors.New("index record size error")
+	}
+	atomic.StoreInt64(&idx.total, int64(intconv.Uint64(b[0:8])))
+	return nil
+}
+
+func (idx *index) writeMeta() error {
+	var b [idxRecordSize]byte
+	intconv.PutUint64(b[0:8], uint64(idx.Length()))
+	intconv.PutUint64(b[8:16], 0)
+	n, err := idx.pager.WriteAt(b[:], 0)
+	if err != nil {
+		return err
+	}
+	if n != idxRecordSize {
+		return errors.New("index record size error")
+	}
+	return nil
+}
+
+func (idx *index) load(total int64) error {
+	idx.hashmapLock.Lock()
+	defer idx.hashmapLock.Unlock()
+	var b [idxRecordSize]byte
+	idx.hashmap = make(map[uint64]*item, total)
+	for i := int64(1); i <= total; i++ {
+		n, err := idx.pager.ReadAt(b[:], i*idxRecordSize)
 		if err != nil {
 			return err
 		}
 		if n != idxRecordSize {
 			return errors.New("index record size error")
 		}
-		keyHash := intconv.Uint32(b[0:4])
-		// dataOffset := intconv.Uint64(b[4:12])
-		dataSize := intconv.Uint32(b[12:16])
-		dataCRC32 := intconv.Uint32(b[16:20])
-		if dataSize != 0 && dataCRC32 != 0 {
-			idx.activeKeys++
+		keyHash := intconv.Uint64(b[0:8])
+		dataOffset := intconv.Uint64(b[8:16])
+		idx.hashmap[keyHash] = &item{
+			id:  i,
+			off: int64(dataOffset),
 		}
-		idx.hashmapSet(keyHash, uint32(i))
-	}
 
+	}
+	atomic.StoreInt64(&idx.total, total)
 	return nil
 }
 
-func (idx *index) PutRecord(ir *indexRecord) error {
-	var offset int64
-	recordID, ok := idx.hashmapGet(ir.keyHash)
-	if ok {
-		offset = int64(recordID * idxRecordSize)
-	} else {
-		if ir.dataSize != 0 && ir.dataCRC32 != 0 {
-			idx.activeKeys++
-		}
-		offset = int64(idx.totalKeys * idxRecordSize)
-		idx.totalKeys++
+func (idx *index) Length() int64 {
+	return atomic.LoadInt64(&idx.total)
+}
+
+func (idx *index) get(k uint64) (*item, bool) {
+	if item, ok := idx.hashmap[k]; ok {
+		return item, ok
 	}
-	n, err := idx.file.WriteAt(ir.Bytes(), offset)
+	return nil, false
+}
+
+func (idx *index) Set(k uint64, off int64) error {
+	idx.hashmapLock.Lock()
+	defer idx.hashmapLock.Unlock()
+	it, ok := idx.get(k)
+	if ok {
+		it.off = off
+	} else {
+		it = &item{
+			id:  atomic.AddInt64(&idx.total, 1),
+			off: off,
+		}
+		idx.hashmap[k] = it
+	}
+	var b [idxRecordSize]byte
+	intconv.PutUint64(b[0:8], k)
+	intconv.PutUint64(b[8:16], uint64(it.off))
+
+	n, err := idx.pager.WriteAt(b[:], it.ID()*idxRecordSize)
 	if err != nil {
 		return err
 	}
 	if n != idxRecordSize {
-		return errors.New("write record size error != 20")
+		return errors.New("index record size error")
 	}
-	return nil
+	return idx.writeMeta()
 }
 
-func (idx *index) hashmapSet(k, v uint32) {
-	idx.hashmapLock.Lock()
-	idx.hashmap[k] = v
-	idx.hashmapLock.Unlock()
-}
-
-func (idx *index) hashmapGet(k uint32) (uint32, bool) {
+func (idx *index) Get(k uint64) (*item, bool) {
 	idx.hashmapLock.RLock()
-	v, found := idx.hashmap[k]
-	idx.hashmapLock.RUnlock()
-	return v, found
+	defer idx.hashmapLock.RUnlock()
+	return idx.get(k)
 }
 
-func (idx *index) GetRecord(recordID uint32) (*indexRecord, error) {
-	if recordID > idx.totalKeys {
-		return nil, errors.New("error recordID")
-	}
-	buf := acquireByte20()
-	defer releaseByte20(buf)
-	offset := recordID * idxRecordSize
-	_, err := idx.pager.ReadAt(buf, int64(offset))
-	if err != nil {
-		return nil, err
-	}
-	return parseIndexRecord(buf)
+func (idx *index) Sync() error {
+	return idx.pager.Flush()
 }
 
 func (idx *index) Close() error {
+	if err := idx.pager.Flush(); err != nil {
+		return err
+	}
 	return idx.file.Close()
 }
