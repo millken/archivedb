@@ -144,6 +144,18 @@ func (s *storage) readEntry(offset uint64) (*Entry, error) {
 	return entry, nil
 }
 
+func (s *storage) updateEntryHeader(off int64, entryHeader *entryHeader) error {
+	ehBuf := entryHeader.Encode()
+	n, err := s.pager.WriteAt(ehBuf, off)
+	if err != nil {
+		return err
+	}
+	if n != entryHeaderSize {
+		return ErrInvalidEntryHeader
+	}
+	return nil
+}
+
 func (s *storage) Sync() error {
 	return s.pager.Flush()
 }

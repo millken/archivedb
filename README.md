@@ -4,9 +4,10 @@ ArchiveDB is an embeddable, persistent and high performance Key/Value database w
 
 ## Features
 
-* Embedded (`import "github.com/millken/archivedb"`)
-* Predictable read/write performance
-* Low latency
+* Support expiry time, historical version.
+* Can store larger-than-memory data.
+* Low memory usage.
+* Safe for concurrent use by multiple goroutines.
 * High throughput (See: [Performance](README.md#Performance) )
 
 ## Getting Started 
@@ -24,7 +25,7 @@ func main() {
     defer db.Close()
     db.Put([]byte("Hello"), []byte("World"))
     val, _ := db.Get([]byte("Hello"))
-    log.Printf(string(val))
+    log.Printf("Hello %s", val)
 }
 ```
 

@@ -5,7 +5,7 @@
 *.so
 *.dylib
 .vscode
-
+_bench*
 # Test binary, built with `go test -c`
 *.test
 

@@ -2,6 +2,7 @@ package archivedb
 
 import (
 	"math"
+	"sync"
 
 	"github.com/pkg/errors"
 )
@@ -13,6 +14,7 @@ const (
 
 var (
 	ErrKeyNotFound    = errors.New("key not found")
+	ErrKeyDeleted     = errors.New("key deleted")
 	ErrEmptyKey       = errors.New("empty key")
 	ErrKeyTooLarge    = errors.New("key size is too large")
 	ErrKeyExpired     = errors.New("key expired")
@@ -26,6 +28,7 @@ type DB struct {
 	opts    *option
 	index   *index
 	storage *storage
+	mu      sync.RWMutex
 }
 
 func Open(filePath string, options ...Option) (*DB, error) {
@@ -57,6 +60,8 @@ func Open(filePath string, options ...Option) (*DB, error) {
 
 //Put put the value of the key to the db
 func (db *DB) Put(key, value []byte) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
 	if err := validateKey(key); err != nil {
 		return err
 	}
@@ -89,6 +94,8 @@ func (db *DB) Put(key, value []byte) error {
 
 //Get gets the value of the key
 func (db *DB) Get(key []byte) ([]byte, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
 	if err := validateKey(key); err != nil {
 		return nil, err
 	}
@@ -104,7 +111,40 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	if err := entry.verify(key); err != nil {
 		return nil, err
 	}
+	if entry.IsDeleted() {
+		return nil, ErrKeyDeleted
+	}
 	return entry.Value, nil
+}
+
+func (db *DB) Delete(key []byte) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if err := validateKey(key); err != nil {
+		return err
+	}
+	hashKey := db.opts.hashFunc(key)
+	item, ok := db.index.Get(hashKey)
+	if !ok {
+		return nil
+	}
+	entry, err := db.storage.readEntry(uint64(item.Offset()))
+	if err != nil {
+		return err
+	}
+	if err := entry.verify(key); err != nil {
+		return err
+	}
+	entry.addMeta(bitDelete)
+	if err := db.storage.updateEntryHeader(item.Offset(), entry.Header); err != nil {
+		return err
+	}
+	if db.opts.fsync {
+		if err := db.storage.Sync(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Close closes the DB
