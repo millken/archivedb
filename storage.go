@@ -62,7 +62,7 @@ func (s *storage) writeMeta() error {
 	var b [storageMetaSize]byte
 	intconv.PutUint64(b[0:8], uint64(s.getEndOffset()))
 	//intconv.PutUint64(b[8:16], 0)
-	n, err := s.pager.WriteAt(b[:], 0)
+	n, err := s.file.WriteAt(b[:], 0)
 	if err != nil {
 		return err
 	}
@@ -78,22 +78,24 @@ func (s *storage) getEndOffset() int64 {
 
 func (s *storage) writeEntry(entry *Entry) error {
 	ehBuf := entry.Header.Encode()
-	stream := s.pager.Stream(s.getEndOffset())
-	n, err := stream.Write(ehBuf)
+	// stream := s.pager.Stream(s.getEndOffset())
+	// n, err := stream.Write(ehBuf)
+	s.file.Seek(0, os.SEEK_END)
+	n, err := s.file.Write(ehBuf)
 	if err != nil {
 		return err
 	}
 	if n != entryHeaderSize {
 		return ErrInvalidEntryHeader
 	}
-	n, err = stream.Write(entry.Key)
+	n, err = s.file.Write(entry.Key)
 	if err != nil {
 		return err
 	}
 	if n != int(entry.Header.KeyLen) {
 		return ErrInvalidEntryHeader
 	}
-	n, err = stream.Write(entry.Value)
+	n, err = s.file.Write(entry.Value)
 	if err != nil {
 		return err
 	}
@@ -106,7 +108,7 @@ func (s *storage) writeEntry(entry *Entry) error {
 
 func (s *storage) readEntry(offset uint64) (*Entry, error) {
 	ehBuf := make([]byte, entryHeaderSize)
-	n, err := s.pager.ReadAt(ehBuf, int64(offset))
+	n, err := s.file.ReadAt(ehBuf, int64(offset))
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +122,7 @@ func (s *storage) readEntry(offset uint64) (*Entry, error) {
 	}
 
 	keyBuf := make([]byte, eh.KeyLen)
-	n, err = s.pager.ReadAt(keyBuf, int64(offset+entryHeaderSize))
+	n, err = s.file.ReadAt(keyBuf, int64(offset+entryHeaderSize))
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +148,7 @@ func (s *storage) readEntry(offset uint64) (*Entry, error) {
 
 func (s *storage) updateEntryHeader(off int64, entryHeader *entryHeader) error {
 	ehBuf := entryHeader.Encode()
-	n, err := s.pager.WriteAt(ehBuf, off)
+	n, err := s.file.WriteAt(ehBuf, off)
 	if err != nil {
 		return err
 	}
@@ -157,11 +159,11 @@ func (s *storage) updateEntryHeader(off int64, entryHeader *entryHeader) error {
 }
 
 func (s *storage) Sync() error {
-	return s.pager.Flush()
+	return s.file.Sync()
 }
 
 func (s *storage) Close() error {
-	if err := s.pager.Flush(); err != nil {
+	if err := s.file.Sync(); err != nil {
 		return err
 	}
 	return s.file.Close()

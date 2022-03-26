@@ -16,3 +16,4 @@ _bench*
 # vendor/
 *.db 
 *.idx
+.DS_Store
