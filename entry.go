@@ -120,7 +120,7 @@ func (e *entry) verify(key []byte) error {
 		return ErrLengthMismatch
 	}
 	if !bytes.Equal(e.key, key) {
-		return ErrKeyMismatch
+		return errors.Wrap(ErrKeyMismatch, "verify entry key")
 	}
 	if e.hdr.Checksum != crc32.Checksum(e.value, CastagnoliCrcTable) {
 		return ErrChecksumFailed

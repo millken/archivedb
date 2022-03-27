@@ -44,11 +44,11 @@ func (hdr *segmentHeader) WriteTo(w io.Writer) (n int64, err error) {
 
 func decodeSegmentHeader(b []byte) (hdr segmentHeader, err error) {
 	if len(b) < SegmentHeaderSize {
-		return hdr, ErrInvalidSegment
+		return hdr, errors.Wrap(ErrInvalidSegment, "invalid segment header")
 	}
 	magic := b[0:len(SegmentMagic)]
 	if !bytes.Equal(magic, []byte(SegmentMagic)) {
-		return hdr, ErrInvalidSegment
+		return hdr, errors.Wrap(ErrInvalidSegment, "invalid magic")
 	}
 	hdr.Version = b[len(SegmentMagic)]
 	return hdr, nil
@@ -176,25 +176,51 @@ func (s *segment) WriteEntry(e entry) error {
 	if !s.CanWrite(e) {
 		return ErrSegmentNotWritable
 	}
-	if err := e.WriteTo(s.w); err != nil {
+
+	n, err := s.w.Write(e.hdr.Encode())
+	if err != nil {
+		return errors.Wrap(err, "write entry header")
+	}
+	if n != EntryHeaderSize {
+		return errors.Wrapf(ErrInvalidEntryHeader, "write entry header length %d", n)
+	}
+	copy(s.data[s.size:], e.hdr.Encode())
+	s.size += uint32(n)
+
+	n, err = s.w.Write(e.key)
+	if err != nil {
 		return err
 	}
-	s.size += e.Size()
+	if n != int(e.hdr.KeySize) {
+		return errors.Wrapf(ErrInvalidEntryHeader, "write key length %d", n)
+	}
+	copy(s.data[s.size:], e.key)
+	s.size += uint32(n)
+
+	n, err = s.w.Write(e.value)
+	if err != nil {
+		return err
+	}
+	if n != int(e.hdr.ValueSize) {
+		return errors.Wrapf(ErrInvalidEntryHeader, "write value length %d", n)
+	}
+	copy(s.data[s.size:], e.value)
+	s.size += uint32(n)
 	return nil
 }
 
 func (s *segment) ReadEntry(off uint32) (e entry, err error) {
 	if off >= s.size {
-		return e, ErrInvalidOffset
+		return e, errors.Wrap(ErrInvalidOffset, "request offset exceeds segment size")
 	}
 	e.hdr, err = readEntryHeader(s.data[off:])
 	if err != nil {
 		return e, err
 	}
 	if !isValidEntryFlag(EntryFlag(e.hdr.Flag)) {
-		return e, ErrInvalidOffset
+		return e, errors.Wrap(ErrInvalidOffset, "invalid entry flag")
 	}
-	start := off + uint32(e.hdr.KeySize) + EntryHeaderSize
+	start := off + EntryHeaderSize
 	e.key = s.data[start : start+uint32(e.hdr.KeySize)]
 	e.value = s.data[start+uint32(e.hdr.KeySize) : start+uint32(e.hdr.KeySize)+uint32(e.hdr.ValueSize)]
 	return

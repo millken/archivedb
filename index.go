@@ -143,7 +143,12 @@ func (idx *index) Get(k uint64) (item, bool) {
 }
 
 func (idx *index) Flush() error {
-	return idx.w.Flush()
+	if idx.w != nil {
+		if err := idx.w.Flush(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (idx *index) Close() error {

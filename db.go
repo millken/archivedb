@@ -19,7 +19,7 @@ const (
 var (
 	ErrSegmentNotFound    = errors.New("segment not found")
 	ErrKeyNotFound        = errors.New("key not found")
-	ErrKeyDeleted         = errors.New("key deleted")
+	ErrKeyDeleted         = errors.New("key was deleted")
 	ErrEmptyKey           = errors.New("empty key")
 	ErrKeyTooLarge        = errors.New("key size is too large")
 	ErrKeyExpired         = errors.New("key expired")
@@ -157,16 +157,21 @@ func (db *DB) IndexPath() string { return filepath.Join(db.path, "index") }
 
 //Put put the value of the key to the db
 func (db *DB) Put(key, value []byte) error {
-	var err error
-	db.mu.Lock()
-	defer db.mu.Unlock()
 	if err := validateKey(key); err != nil {
 		return err
 	}
 	if len(value) > int(MaxValueSize) {
 		return ErrValueTooLarge
 	}
-	entry := createEntry(EntryInsertFlag, key, value)
+	return db.set(key, value, EntryInsertFlag)
+}
+
+//Put put the value of the key to the db
+func (db *DB) set(key, value []byte, flag EntryFlag) error {
+	var err error
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	entry := createEntry(flag, key, value)
 	segment := db.activeSegment()
 	if segment == nil || !segment.CanWrite(entry) {
 		if segment, err = db.createSegment(); err != nil {
@@ -211,6 +216,9 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if entry.hdr.Flag == EntryDeleteFlag {
+		return nil, ErrKeyDeleted
+	}
 
 	if err := entry.verify(key); err != nil {
 		return nil, err
@@ -220,24 +228,26 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 }
 
 func (db *DB) Delete(key []byte) error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
 	if err := validateKey(key); err != nil {
 		return err
 	}
-
-	return nil
+	return db.set(key, nil, EntryDeleteFlag)
 }
 
 // Close closes the DB
 func (db *DB) Close() error {
-	if err := db.activeSegment().Close(); err != nil {
-		return errors.Wrap(err, "closing storage")
+	var err error
+	for _, s := range db.segments {
+		if e := s.Close(); e != nil && err == nil {
+			err = e
+		}
 	}
-	if err := db.index.Close(); err != nil {
-		return errors.Wrap(err, "closing index")
+	if db.index != nil {
+		if e := db.index.Close(); e != nil && err == nil {
+			err = e
+		}
 	}
-	return nil
+	return err
 }
 
 func validateKey(key []byte) error {

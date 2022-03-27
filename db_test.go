@@ -57,6 +57,7 @@ func TestDB(t *testing.T) {
 		err := db.Delete(test.key)
 		require.NoError(err)
 		v, err = db.Get([]byte("foo"))
+		require.Error(err)
 		require.ErrorIs(err, ErrKeyDeleted)
 		require.Nil(v)
 	}
@@ -73,14 +74,15 @@ func TestOpen_MultipleGoroutines(t *testing.T) {
 		instances  = 30
 		iterations = 30
 	)
-	dir, cleanup := MustTempDir()
-	defer cleanup()
 	var wg sync.WaitGroup
 	errCh := make(chan error, iterations*instances)
 	for iteration := 0; iteration < iterations; iteration++ {
 		for instance := 0; instance < instances; instance++ {
 			wg.Add(1)
 			go func() {
+				dir, cleanup := MustTempDir()
+				defer cleanup()
+
 				defer wg.Done()
 				db, err := Open(dir)
 				if err != nil {
@@ -105,10 +107,9 @@ func TestOpen_MultipleGoroutines(t *testing.T) {
 
 func TestDB_Concurrent(t *testing.T) {
 	require := require.New(t)
-	testFile := "db003.test"
-	defer os.Remove(testFile)
-	defer os.Remove(testFile + ".idx")
-	db, err := Open(testFile)
+	dir, cleanup := MustTempDir()
+	defer cleanup()
+	db, err := Open(dir)
 	require.NoError(err)
 	require.NotNil(db)
 	const n, secs, maxkey = 4, 6, 1000
@@ -176,10 +177,9 @@ func TestDB_Concurrent(t *testing.T) {
 
 func TestRandomWrites(t *testing.T) {
 	require := require.New(t)
-	testFile := "db004.test"
-	defer os.Remove(testFile)
-	defer os.Remove(testFile + ".idx")
-	db, err := Open(testFile)
+	dir, cleanup := MustTempDir()
+	defer cleanup()
+	db, err := Open(dir)
 	require.NoError(err)
 
 	keys := [64][]byte{}
@@ -228,10 +228,6 @@ func TestRandomWrites(t *testing.T) {
 }
 
 func BenchmarkDB_Put(b *testing.B) {
-	currentDir, err := os.Getwd()
-	if err != nil {
-		b.Fatal(err)
-	}
 
 	tests := []benchmarkTestCase{
 		{"128B", 128},
@@ -254,14 +250,10 @@ func BenchmarkDB_Put(b *testing.B) {
 	}
 
 	for name, options := range variants {
-		testdir, err := ioutil.TempDir(currentDir, "_bench")
-		if err != nil {
-			b.Fatal(err)
-		}
-		defer os.RemoveAll(testdir)
-		testfile := filepath.Join(testdir, "db001.bench")
+		dir, cleanup := MustTempDir()
+		defer cleanup()
 
-		db, err := Open(testfile, options...)
+		db, err := Open(dir, options...)
 		if err != nil {
 			b.Fatal(err)
 		}
