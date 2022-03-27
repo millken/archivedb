@@ -1,124 +1,113 @@
 package archivedb
 
 import (
+	"bufio"
 	"encoding/binary"
+	"io"
 	"os"
 	"sync"
 	"sync/atomic"
 
-	"github.com/pkg/errors"
-	"github.com/tidwall/bfile"
+	"github.com/millken/archivedb/internal/mmap"
 )
 
 /*
-index record
-+---------------+----------------+
-|Hash key (8B)  |Entry seek (8B) |
-+---------------+----------------+
+ +-------------+-------------+-------------+
+ | Hash(8B)    | segment(2B) | Offset(4B)  |
+ +-------------+-------------+-------------+
 */
 const (
-	idxRecordSize = 16
-	fsMode        = os.O_RDWR | os.O_CREATE
+	bucketsCount = 512
+
+	indexItemSize = 14
 )
 
 var intconv = binary.BigEndian
 
 type item struct {
-	id  int64
-	off int64
+	id  uint16
+	off uint32
 }
 
-func (it *item) Offset() int64 {
+func (it item) Offset() uint32 {
 	return it.off
 }
 
-func (it *item) ID() int64 {
+func (it item) ID() uint16 {
 	return it.id
 }
 
+type bucket struct {
+	items map[uint64]item
+	mu    sync.RWMutex
+}
+
+func (b *bucket) Init() {
+	b.items = make(map[uint64]item)
+}
+func (b *bucket) Set(k uint64, item item) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.items[k] = item
+	return nil
+}
+
+func (b *bucket) Get(k uint64) (item, bool) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if it, ok := b.items[k]; ok {
+		return it, ok
+	}
+	return item{}, false
+}
+
 type index struct {
-	file        *os.File
-	pager       *bfile.Pager
-	hashmap     map[uint64]*item
-	hashmapLock sync.RWMutex
-	total       int64
+	path    string
+	file    *os.File
+	data    []byte
+	buckets [bucketsCount]bucket
+	w       *bufio.Writer
+	total   int64
 }
 
 func openIndex(filePath string) (*index, error) {
-	file, err := os.OpenFile(filePath, fsMode, os.FileMode(0644))
+	// Open file handler for writing & seek to end of data.
+	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE, 0666)
 	if err != nil {
-		return nil, errors.Wrap(err, "open index file")
+		return nil, err
+	} else if _, err := file.Seek(0, io.SeekEnd); err != nil {
+		return nil, err
+	}
+	fi, err := file.Stat()
+	if err != nil {
+		return nil, err
 	}
 
-	stat, err := file.Stat()
-	if err != nil {
-		return nil, errors.Wrap(err, "stat index file")
-	}
 	idx := &index{
-		file:  file,
-		pager: bfile.NewPager(file),
+		path: filePath,
+		file: file,
+		w:    bufio.NewWriterSize(file, 32*1024),
 	}
-	if stat.Size() == 0 {
-		if err := idx.writeMeta(); err != nil {
-			return nil, errors.Wrap(err, "write index file")
-		}
+	atomic.StoreInt64(&idx.total, fi.Size()/indexItemSize)
+	// Memory map file data.
+	if idx.data, err = mmap.Map(idx.path, fi.Size()); err != nil {
+		return nil, err
 	}
-	if err := idx.readMeta(); err != nil {
-		return nil, errors.Wrap(err, "read index file")
+	for i := range idx.buckets[:] {
+		idx.buckets[i].Init()
 	}
 
-	return idx, idx.load(idx.Length())
+	return idx, idx.load()
 }
 
-func (idx *index) readMeta() error {
-	var b [idxRecordSize]byte
-	n, err := idx.pager.ReadAt(b[:], 0)
-	if err != nil {
-		return err
-	}
-	if n != idxRecordSize {
-		return errors.New("index record size error")
-	}
-	atomic.StoreInt64(&idx.total, int64(intconv.Uint64(b[0:8])))
-	return nil
-}
-
-func (idx *index) writeMeta() error {
-	var b [idxRecordSize]byte
-	intconv.PutUint64(b[0:8], uint64(idx.Length()))
-	intconv.PutUint64(b[8:16], 0)
-	n, err := idx.pager.WriteAt(b[:], 0)
-	if err != nil {
-		return err
-	}
-	if n != idxRecordSize {
-		return errors.New("index record size error")
-	}
-	return nil
-}
-
-func (idx *index) load(total int64) error {
-	idx.hashmapLock.Lock()
-	defer idx.hashmapLock.Unlock()
-	var b [idxRecordSize]byte
-	idx.hashmap = make(map[uint64]*item, total)
-	for i := int64(1); i <= total; i++ {
-		n, err := idx.pager.ReadAt(b[:], i*idxRecordSize)
-		if err != nil {
-			return err
-		}
-		if n != idxRecordSize {
-			return errors.New("index record size error")
-		}
+func (idx *index) load() error {
+	for i := int64(0); i < atomic.LoadInt64(&idx.total); i++ {
+		b := idx.data[i*indexItemSize : (i+1)*indexItemSize]
 		keyHash := intconv.Uint64(b[0:8])
-		dataOffset := intconv.Uint64(b[8:16])
-		idx.hashmap[keyHash] = &item{
-			id:  i,
-			off: int64(dataOffset),
-		}
-
+		id := intconv.Uint16(b[8:10])
+		offset := intconv.Uint32(b[10:14])
+		idx.Insert(keyHash, id, offset)
 	}
-	atomic.StoreInt64(&idx.total, total)
 	return nil
 }
 
@@ -126,52 +115,39 @@ func (idx *index) Length() int64 {
 	return atomic.LoadInt64(&idx.total)
 }
 
-func (idx *index) get(k uint64) (*item, bool) {
-	if item, ok := idx.hashmap[k]; ok {
-		return item, ok
-	}
-	return nil, false
+func (idx *index) get(k uint64) (item, bool) {
+	bid := k % bucketsCount
+	return idx.buckets[bid].Get(k)
 }
 
-func (idx *index) Set(k uint64, off int64) error {
-	idx.hashmapLock.Lock()
-	defer idx.hashmapLock.Unlock()
-	it, ok := idx.get(k)
-	if ok {
-		it.off = off
-	} else {
-		it = &item{
-			id:  atomic.AddInt64(&idx.total, 1),
-			off: off,
-		}
-		idx.hashmap[k] = it
-	}
-	var b [idxRecordSize]byte
+func (idx *index) Insert(k uint64, segmentID uint16, off uint32) error {
+	bid := k % bucketsCount
+	var b [indexItemSize]byte
 	intconv.PutUint64(b[0:8], k)
-	intconv.PutUint64(b[8:16], uint64(it.off))
-
-	n, err := idx.pager.WriteAt(b[:], it.ID()*idxRecordSize)
+	intconv.PutUint16(b[8:10], segmentID)
+	intconv.PutUint32(b[10:14], off)
+	n, err := idx.w.Write(b[:])
 	if err != nil {
 		return err
+	} else if n != indexItemSize {
+		return io.ErrShortWrite
+	} else if err = idx.buckets[bid].Set(k, item{segmentID, off}); err != nil {
+		return err
 	}
-	if n != idxRecordSize {
-		return errors.New("index record size error")
-	}
-	return idx.writeMeta()
+	atomic.AddInt64(&idx.total, 1)
+	return nil
 }
 
-func (idx *index) Get(k uint64) (*item, bool) {
-	idx.hashmapLock.RLock()
-	defer idx.hashmapLock.RUnlock()
+func (idx *index) Get(k uint64) (item, bool) {
 	return idx.get(k)
 }
 
-func (idx *index) Sync() error {
-	return idx.pager.Flush()
+func (idx *index) Flush() error {
+	return idx.w.Flush()
 }
 
 func (idx *index) Close() error {
-	if err := idx.pager.Flush(); err != nil {
+	if err := idx.Flush(); err != nil {
 		return err
 	}
 	return idx.file.Close()

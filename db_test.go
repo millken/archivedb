@@ -25,10 +25,9 @@ type benchmarkTestCase struct {
 
 func TestDB(t *testing.T) {
 	require := require.New(t)
-	testFile := "db001.test"
-	defer os.Remove(testFile)
-	defer os.Remove(testFile + ".idx")
-	db, err := Open(testFile)
+	dir, cleanup := MustTempDir()
+	defer cleanup()
+	db, err := Open(dir)
 	require.NoError(err)
 	require.NotNil(db)
 	tests := []struct {
@@ -74,9 +73,8 @@ func TestOpen_MultipleGoroutines(t *testing.T) {
 		instances  = 30
 		iterations = 30
 	)
-	testFile := "db002.test"
-	defer os.Remove(testFile)
-	defer os.Remove(testFile + ".idx")
+	dir, cleanup := MustTempDir()
+	defer cleanup()
 	var wg sync.WaitGroup
 	errCh := make(chan error, iterations*instances)
 	for iteration := 0; iteration < iterations; iteration++ {
@@ -84,7 +82,7 @@ func TestOpen_MultipleGoroutines(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				db, err := Open(testFile)
+				db, err := Open(dir)
 				if err != nil {
 					errCh <- err
 					return
@@ -383,4 +381,12 @@ func BenchmarkDB_Delete(b *testing.B) {
 	}
 	b.StopTimer()
 
+}
+
+func MustTempDir() (string, func()) {
+	dir, err := ioutil.TempDir("", "archivedb-test")
+	if err != nil {
+		panic(fmt.Sprintf("failed to create temp dir: %v", err))
+	}
+	return dir, func() { os.RemoveAll(dir) }
 }
