@@ -39,10 +39,14 @@ type DB struct {
 	mu       sync.RWMutex
 }
 
-func Open(path string, options ...Option) (*DB, error) {
+func Open(path string, options ...Option) (db *DB, err error) {
 	opts := &option{
 		fsync:    false,
 		hashFunc: DefaultHashFunc,
+	}
+	db = &DB{
+		path: path,
+		opts: opts,
 	}
 	// Create path if it doesn't exist.
 	if err := os.MkdirAll(filepath.Join(path), 0777); err != nil {
@@ -54,26 +58,16 @@ func Open(path string, options ...Option) (*DB, error) {
 		}
 	}
 
-	db := &DB{
-		path: path,
-		opts: opts,
+	if db.index, err = openIndex(db.IndexPath()); err != nil {
+		return nil, errors.Wrap(err, "open index")
 	}
 	// Open components.
 	if err := func() (err error) {
-		if err := db.openSegments(); err != nil {
+		if err = db.openSegments(); err != nil {
 			return err
 		}
 
-		// Init last segment for writes.
-		if err := db.activeSegment().InitForWrite(); err != nil {
-			return err
-		}
-
-		db.index, err = openIndex(db.IndexPath())
-		if err != nil {
-			return errors.Wrap(err, "opening index")
-		}
-		//  else if err := db.index.Recover(db.segments); err != nil {
+		//  if err := db.index.Recover(db.segments); err != nil {
 		// 	return err
 		// }
 
@@ -123,12 +117,6 @@ func (db *DB) activeSegment() *segment {
 }
 
 func (db *DB) createSegment() (*segment, error) {
-	// Close writer for active segment, if one exists.
-	if segment := db.activeSegment(); segment != nil {
-		if err := segment.CloseForWrite(); err != nil {
-			return nil, err
-		}
-	}
 
 	// Generate a new sequential segment identifier.
 	var id uint16
@@ -143,11 +131,6 @@ func (db *DB) createSegment() (*segment, error) {
 		return nil, err
 	}
 	db.segments = append(db.segments, segment)
-
-	// Allow segment to write.
-	if err := segment.InitForWrite(); err != nil {
-		return nil, err
-	}
 
 	return segment, nil
 }

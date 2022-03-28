@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"hash/crc32"
-	"io"
 	"math"
 
 	"github.com/pkg/errors"
@@ -67,7 +66,7 @@ func (e *entry) Size() uint32 {
 
 func readEntryHeader(b []byte) (hdr EntryHeader, err error) {
 	if len(b) < EntryHeaderSize {
-		return hdr, ErrInvalidEntryHeader
+		return hdr, errors.Wrapf(ErrInvalidEntryHeader, "read entry header length %d", len(b))
 	}
 	hdr.Flag = EntryFlag(b[0])
 	hdr.KeySize = uint8(b[1])
@@ -87,32 +86,6 @@ func createEntry(flag EntryFlag, key, value []byte) entry {
 			Flag:      flag,
 		},
 	}
-}
-
-func (e *entry) WriteTo(w io.Writer) error {
-	n, err := w.Write(e.hdr.Encode())
-	if err != nil {
-		return errors.Wrap(err, "write entry header")
-	}
-	if n != EntryHeaderSize {
-		return errors.Wrapf(ErrInvalidEntryHeader, "write entry header length %d", n)
-	}
-
-	n, err = w.Write(e.key)
-	if err != nil {
-		return err
-	}
-	if n != int(e.hdr.KeySize) {
-		return errors.Wrapf(ErrInvalidEntryHeader, "write key length %d", n)
-	}
-	n, err = w.Write(e.value)
-	if err != nil {
-		return err
-	}
-	if n != int(e.hdr.ValueSize) {
-		return errors.Wrapf(ErrInvalidEntryHeader, "write value length %d", n)
-	}
-	return nil
 }
 
 func (e *entry) verify(key []byte) error {

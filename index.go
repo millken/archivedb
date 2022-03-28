@@ -1,14 +1,14 @@
 package archivedb
 
 import (
-	"bufio"
 	"encoding/binary"
 	"io"
 	"os"
 	"sync"
 	"sync/atomic"
 
-	"github.com/millken/archivedb/internal/mmap"
+	"github.com/edsrzf/mmap-go"
+	"github.com/pkg/errors"
 )
 
 /*
@@ -17,8 +17,8 @@ import (
  +-------------+-------------+-------------+
 */
 const (
-	bucketsCount = 512
-
+	bucketsCount  = 512
+	indexBlock    = 14 << 16
 	indexItemSize = 14
 )
 
@@ -44,11 +44,22 @@ type bucket struct {
 
 func (b *bucket) Init() {
 	b.items = make(map[uint64]item)
+	b.Reset()
 }
+
+func (b *bucket) Reset() {
+	b.mu.Lock()
+	bm := b.items
+	for k := range bm {
+		delete(bm, k)
+	}
+	b.mu.Unlock()
+}
+
 func (b *bucket) Set(k uint64, item item) error {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	b.items[k] = item
+	b.mu.Unlock()
 	return nil
 }
 
@@ -64,35 +75,35 @@ func (b *bucket) Get(k uint64) (item, bool) {
 type index struct {
 	path    string
 	file    *os.File
-	data    []byte
+	data    mmap.MMap
 	buckets [bucketsCount]bucket
-	w       *bufio.Writer
 	total   int64
+	size    int
 }
 
 func openIndex(filePath string) (*index, error) {
-	// Open file handler for writing & seek to end of data.
-	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE, 0666)
+	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
-		return nil, err
-	} else if _, err := file.Seek(0, io.SeekEnd); err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "failed to open index file")
 	}
-	fi, err := file.Stat()
+	fi, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "failed to stat index file")
 	}
-
+	if fi.Size() == 0 {
+		if err := f.Truncate(indexBlock); err != nil {
+			return nil, errors.Wrap(err, "failed to truncate index file")
+		}
+	}
 	idx := &index{
 		path: filePath,
-		file: file,
-		w:    bufio.NewWriterSize(file, 32*1024),
+		file: f,
 	}
-	atomic.StoreInt64(&idx.total, fi.Size()/indexItemSize)
-	// Memory map file data.
-	if idx.data, err = mmap.Map(idx.path, fi.Size()); err != nil {
-		return nil, err
+	if idx.data, err = mmap.Map(f, mmap.RDWR, 0); err != nil {
+		return nil, errors.Wrap(err, "failed to mmap index file")
 	}
+	atomic.StoreInt64(&idx.total, 0)
+
 	for i := range idx.buckets[:] {
 		idx.buckets[i].Init()
 	}
@@ -101,12 +112,23 @@ func openIndex(filePath string) (*index, error) {
 }
 
 func (idx *index) load() error {
-	for i := int64(0); i < atomic.LoadInt64(&idx.total); i++ {
-		b := idx.data[i*indexItemSize : (i+1)*indexItemSize]
-		keyHash := intconv.Uint64(b[0:8])
+	if idx.data == nil {
+		return nil
+	}
+	for idx.size = 0; idx.size < len(idx.data); {
+		b := idx.data[idx.size : idx.size+indexItemSize]
+		key := intconv.Uint64(b[0:8])
 		id := intconv.Uint16(b[8:10])
 		offset := intconv.Uint32(b[10:14])
-		idx.Insert(keyHash, id, offset)
+		if key == 0 {
+			break
+		}
+		if key == 65538 {
+			_ = key
+		}
+		if err := idx.Insert(key, id, offset); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -121,20 +143,44 @@ func (idx *index) get(k uint64) (item, bool) {
 }
 
 func (idx *index) Insert(k uint64, segmentID uint16, off uint32) error {
+	var err error
+	if k == 65538 {
+		_ = k
+	}
 	bid := k % bucketsCount
 	var b [indexItemSize]byte
 	intconv.PutUint64(b[0:8], k)
 	intconv.PutUint16(b[8:10], segmentID)
 	intconv.PutUint32(b[10:14], off)
-	n, err := idx.w.Write(b[:])
-	if err != nil {
-		return err
-	} else if n != indexItemSize {
+	n := copy(idx.data[idx.size:], b[:])
+	if n != indexItemSize {
 		return io.ErrShortWrite
 	} else if err = idx.buckets[bid].Set(k, item{segmentID, off}); err != nil {
 		return err
 	}
+	idx.size += indexItemSize
 	atomic.AddInt64(&idx.total, 1)
+
+	// auto remap
+	if atomic.LoadInt64(&idx.total)%(indexBlock/indexItemSize-100) == 0 {
+		if idx.data != nil {
+			if err := idx.data.Flush(); err != nil {
+				return err
+			} else if err := idx.data.Unmap(); err != nil {
+				return err
+			}
+		}
+		fi, err := idx.file.Stat()
+		if err != nil {
+			return err
+		}
+		if err = idx.file.Truncate(int64(fi.Size() + indexBlock)); err != nil {
+			return err
+		}
+		if idx.data, err = mmap.Map(idx.file, mmap.RDWR, 0); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -143,8 +189,8 @@ func (idx *index) Get(k uint64) (item, bool) {
 }
 
 func (idx *index) Flush() error {
-	if idx.w != nil {
-		if err := idx.w.Flush(); err != nil {
+	if idx.data != nil {
+		if err := idx.data.Flush(); err != nil {
 			return err
 		}
 	}
@@ -152,8 +198,19 @@ func (idx *index) Flush() error {
 }
 
 func (idx *index) Close() error {
-	if err := idx.Flush(); err != nil {
-		return err
+	if idx.data != nil {
+		if err := idx.data.Flush(); err != nil {
+			return err
+		} else if err := idx.data.Unmap(); err != nil {
+			return err
+		}
 	}
-	return idx.file.Close()
+	if idx.file != nil {
+		if err := idx.file.Sync(); err != nil {
+			return err
+		} else if err := idx.file.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
