@@ -16,7 +16,7 @@ const (
 	SegmentMagic          = "ArSeG"
 	SegmentSize    uint32 = 1 << 30 // 1GB
 
-	SegmentHeaderSize = 6 // magic + version + id
+	SegmentHeaderSize = 6 // magic + version
 )
 
 var (

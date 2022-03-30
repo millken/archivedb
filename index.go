@@ -1,13 +1,14 @@
 package archivedb
 
 import (
+	"bytes"
 	"encoding/binary"
 	"io"
 	"os"
 	"sync"
 	"sync/atomic"
 
-	"github.com/edsrzf/mmap-go"
+	"github.com/millken/archivedb/internal/mmap"
 	"github.com/pkg/errors"
 )
 
@@ -17,10 +18,18 @@ import (
  +-------------+-------------+-------------+
 */
 const (
-	bucketsCount  = 512
-	indexBlock    = 14 << 16
-	indexItemSize = 14
-	indexMagic    = "ArIdX"
+	bucketsCount    = 512
+	indexBlock      = 14 << 16
+	indexItemSize   = 14
+	IndexVersion    = 1
+	IndexMagic      = "ArIdX"
+	IndexHeaderSize = 6
+)
+
+var (
+	ErrInvalidIndex        = errors.New("invalid index")
+	ErrInvalidIndexVersion = errors.New("invalid index version")
+	ErrIndexNotWritable    = errors.New("index not writable")
 )
 
 var intconv = binary.BigEndian
@@ -73,10 +82,37 @@ func (b *bucket) Get(k uint64) (item, bool) {
 	return item{}, false
 }
 
+type indexHeader struct {
+	Version uint8
+}
+
+func newIndexHeader() indexHeader {
+	return indexHeader{Version: SegmentVersion}
+}
+
+// WriteTo writes the header to w.
+func (hdr *indexHeader) WriteTo(w io.Writer) (n int64, err error) {
+	var buf bytes.Buffer
+	buf.WriteString(IndexMagic)
+	binary.Write(&buf, binary.BigEndian, hdr.Version)
+	return buf.WriteTo(w)
+}
+
+func decodeIndexHeader(b []byte) (hdr indexHeader, err error) {
+	if len(b) < len(IndexMagic) {
+		return hdr, errors.Wrap(ErrInvalidIndex, "invalid index header")
+	}
+	magic := b[0:len(IndexMagic)]
+	if !bytes.Equal(magic, []byte(IndexMagic)) {
+		return hdr, errors.Wrap(ErrInvalidIndexVersion, "invalid magic")
+	}
+	hdr.Version = b[len(IndexMagic)]
+	return hdr, nil
+}
+
 type index struct {
 	path    string
-	file    *os.File
-	data    mmap.MMap
+	mapFile *mmap.MapFile
 	buckets [bucketsCount]bucket
 	total   int64
 	size    int
@@ -92,16 +128,23 @@ func openIndex(filePath string) (*index, error) {
 		return nil, errors.Wrap(err, "failed to stat index file")
 	}
 	if fi.Size() == 0 {
-		if err := f.Truncate(indexBlock); err != nil {
-			return nil, errors.Wrap(err, "failed to truncate index file")
+		// Write header to file and close.
+		hdr := newIndexHeader()
+		if _, err := hdr.WriteTo(f); err != nil {
+			return nil, err
+		} else if err := f.Sync(); err != nil {
+			return nil, err
+		} else if err := f.Close(); err != nil {
+			return nil, err
 		}
 	}
-	idx := &index{
-		path: filePath,
-		file: f,
-	}
-	if idx.data, err = mmap.Map(f, mmap.RDWR, 0); err != nil {
+	mapFile, err := mmap.Open(filePath)
+	if err != nil {
 		return nil, errors.Wrap(err, "failed to mmap index file")
+	}
+	idx := &index{
+		path:    filePath,
+		mapFile: mapFile,
 	}
 	atomic.StoreInt64(&idx.total, 0)
 
@@ -113,21 +156,18 @@ func openIndex(filePath string) (*index, error) {
 }
 
 func (idx *index) load() error {
-	if idx.data == nil {
-		return nil
-	}
-	for idx.size = 0; idx.size < len(idx.data); {
-		b := idx.data[idx.size : idx.size+indexItemSize]
+	b := make([]byte, indexItemSize)
+	for i := IndexHeaderSize; i < int(idx.mapFile.Size()); i += indexItemSize {
+		if n, err := idx.mapFile.ReadAt(b, int64(i)); err != nil {
+			return errors.Wrap(err, "failed to read index")
+		} else if n != indexItemSize {
+			return errors.Wrap(ErrInvalidIndex, "invalid index")
+		}
 		key := intconv.Uint64(b[0:8])
 		id := intconv.Uint16(b[8:10])
 		offset := intconv.Uint32(b[10:14])
-		if key == 0 {
-			break
-		}
-		if key == 65538 {
-			_ = key
-		}
-		if err := idx.Insert(key, id, offset); err != nil {
+
+		if err := idx.set(key, id, offset); err != nil {
 			return err
 		}
 	}
@@ -143,45 +183,25 @@ func (idx *index) get(k uint64) (item, bool) {
 	return idx.buckets[bid].Get(k)
 }
 
-func (idx *index) Insert(k uint64, segmentID uint16, off uint32) error {
-	var err error
-	if k == 65538 {
-		_ = k
-	}
+func (idx *index) set(k uint64, segmentID uint16, off uint32) error {
 	bid := k % bucketsCount
-	var b [indexItemSize]byte
+	return idx.buckets[bid].Set(k, item{segmentID, off})
+}
+
+func (idx *index) Insert(k uint64, segmentID uint16, off uint32) error {
+	b := make([]byte, indexItemSize)
 	intconv.PutUint64(b[0:8], k)
 	intconv.PutUint16(b[8:10], segmentID)
 	intconv.PutUint32(b[10:14], off)
-	n := copy(idx.data[idx.size:], b[:])
-	if n != indexItemSize {
-		return io.ErrShortWrite
-	} else if err = idx.buckets[bid].Set(k, item{segmentID, off}); err != nil {
+	if n, err := idx.mapFile.Write(b[:]); err != nil {
+		return errors.Wrap(err, "failed to write index")
+	} else if n != indexItemSize {
+		return errors.Wrap(ErrInvalidIndex, "invalid index")
+	} else if err = idx.set(k, segmentID, off); err != nil {
 		return err
 	}
 	idx.size += indexItemSize
 	atomic.AddInt64(&idx.total, 1)
-
-	// auto remap
-	if atomic.LoadInt64(&idx.total)%(indexBlock/indexItemSize-100) == 0 {
-		if idx.data != nil {
-			if err := idx.data.Flush(); err != nil {
-				return err
-			} else if err := idx.data.Unmap(); err != nil {
-				return err
-			}
-		}
-		fi, err := idx.file.Stat()
-		if err != nil {
-			return err
-		}
-		if err = idx.file.Truncate(int64(fi.Size() + indexBlock)); err != nil {
-			return err
-		}
-		if idx.data, err = mmap.Map(idx.file, mmap.RDWR, 0); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -190,28 +210,9 @@ func (idx *index) Get(k uint64) (item, bool) {
 }
 
 func (idx *index) Flush() error {
-	if idx.data != nil {
-		if err := idx.data.Flush(); err != nil {
-			return err
-		}
-	}
-	return nil
+	return idx.mapFile.Flush()
 }
 
 func (idx *index) Close() error {
-	if idx.data != nil {
-		if err := idx.data.Flush(); err != nil {
-			return err
-		} else if err := idx.data.Unmap(); err != nil {
-			return err
-		}
-	}
-	if idx.file != nil {
-		if err := idx.file.Sync(); err != nil {
-			return err
-		} else if err := idx.file.Close(); err != nil {
-			return err
-		}
-	}
-	return nil
+	return idx.mapFile.Close()
 }
