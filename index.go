@@ -20,6 +20,7 @@ const (
 	bucketsCount  = 512
 	indexBlock    = 14 << 16
 	indexItemSize = 14
+	indexMagic    = "ArIdX"
 )
 
 var intconv = binary.BigEndian
