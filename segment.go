@@ -7,7 +7,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/edsrzf/mmap-go"
+	"github.com/millken/archivedb/internal/mmap"
 	"github.com/pkg/errors"
 )
 
@@ -57,8 +57,8 @@ type segment struct {
 	id   uint16
 	path string
 
-	data mmap.MMap
-	size uint32 // current file size
+	mapFile *mmap.MapFile
+	size    uint32 // current file size
 }
 
 // newSegment returns a new instance of segment.
@@ -82,8 +82,6 @@ func createSegment(id uint16, path string) (*segment, error) {
 	hdr := newSegmentHeader()
 	if _, err := hdr.WriteTo(f); err != nil {
 		return nil, err
-	} else if err := f.Truncate(int64(SegmentSize)); err != nil {
-		return nil, err
 	} else if err := f.Sync(); err != nil {
 		return nil, err
 	} else if err := f.Close(); err != nil {
@@ -103,9 +101,6 @@ func createSegment(id uint16, path string) (*segment, error) {
 	return segment, nil
 }
 
-// Data returns the raw data.
-func (s *segment) Data() []byte { return s.data }
-
 // ID returns the id the segment was initialized with.
 func (s *segment) ID() uint16 { return s.id }
 
@@ -115,24 +110,27 @@ func (s *segment) Size() uint32 { return s.size }
 
 func (s *segment) Open() error {
 	if err := func() (err error) {
-		f, err := os.OpenFile(s.path, os.O_CREATE|os.O_RDWR, 0644)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		if s.data, err = mmap.Map(f, mmap.RDWR, 0); err != nil {
+		if s.mapFile, err = mmap.OpenWithBufferSize(s.path, 40960); err != nil {
 			return err
 		}
 
 		// Read header.
-		hdr, err := decodeSegmentHeader(s.data)
+		buf := make([]byte, SegmentHeaderSize)
+		if _, err := s.mapFile.ReadAt(buf, 0); err != nil {
+			return err
+		}
+		hdr, err := decodeSegmentHeader(buf)
 		if err != nil {
 			return err
 		} else if hdr.Version != SegmentVersion {
 			return ErrInvalidSegmentVersion
 		}
-		for s.size = uint32(SegmentHeaderSize); s.size < uint32(len(s.data)); {
-			hdr, err := readEntryHeader(s.data[s.size : s.size+EntryHeaderSize])
+		buf = make([]byte, EntryHeaderSize)
+		for s.size = uint32(SegmentHeaderSize); s.size < uint32(s.mapFile.Size()); {
+			if _, err := s.mapFile.ReadAt(buf, int64(s.size)); err != nil {
+				return err
+			}
+			hdr, err := readEntryHeader(buf)
 			if err != nil {
 				return err
 			}
@@ -155,20 +153,27 @@ func (s *segment) WriteEntry(e entry) error {
 		return ErrSegmentNotWritable
 	}
 
-	n := copy(s.data[s.size:], e.hdr.Encode())
-	if n != EntryHeaderSize {
+	// Write entry header.
+	n, err := s.mapFile.Write(e.hdr.Encode())
+	if err != nil {
+		return err
+	} else if n != EntryHeaderSize {
 		return errors.Wrapf(ErrInvalidEntryHeader, "write entry header length %d", n)
 	}
 	s.size += uint32(n)
 
-	n = copy(s.data[s.size:], e.key)
-	if n != int(e.hdr.KeySize) {
+	n, err = s.mapFile.Write(e.key)
+	if err != nil {
+		return err
+	} else if n != int(e.hdr.KeySize) {
 		return errors.Wrapf(ErrInvalidEntryHeader, "write key length %d", n)
 	}
 	s.size += uint32(n)
 
-	n = copy(s.data[s.size:], e.value)
-	if n != int(e.hdr.ValueSize) {
+	n, err = s.mapFile.Write(e.value)
+	if err != nil {
+		return err
+	} else if n != int(e.hdr.ValueSize) {
 		return errors.Wrapf(ErrInvalidEntryHeader, "write value length %d", n)
 	}
 	s.size += uint32(n)
@@ -179,7 +184,13 @@ func (s *segment) ReadEntry(off uint32) (e entry, err error) {
 	if off >= s.size {
 		return e, errors.Wrap(ErrInvalidOffset, "request offset exceeds segment size")
 	}
-	e.hdr, err = readEntryHeader(s.data[off : off+EntryHeaderSize])
+	buf := make([]byte, EntryHeaderSize)
+	if n, err := s.mapFile.ReadAt(buf, int64(off)); err != nil {
+		return e, err
+	} else if n != int(EntryHeaderSize) {
+		return e, errors.Wrapf(ErrInvalidEntryHeader, "read entry header length %d", n)
+	}
+	e.hdr, err = readEntryHeader(buf)
 	if err != nil {
 		return e, err
 	}
@@ -187,25 +198,53 @@ func (s *segment) ReadEntry(off uint32) (e entry, err error) {
 		return e, errors.Wrap(ErrInvalidOffset, "invalid entry flag")
 	}
 	start := off + EntryHeaderSize
-	e.key = s.data[start : start+uint32(e.hdr.KeySize)]
-	e.value = s.data[start+uint32(e.hdr.KeySize) : start+uint32(e.hdr.KeySize)+uint32(e.hdr.ValueSize)]
+	key := make([]byte, e.hdr.KeySize)
+	if n, err := s.mapFile.ReadAt(key, int64(start)); err != nil {
+		return e, err
+	} else if n != int(e.hdr.KeySize) {
+		return e, errors.Wrapf(ErrInvalidEntryHeader, "read key length %d", n)
+	}
+	e.key = key
+	start += uint32(e.hdr.KeySize)
+	value := make([]byte, e.hdr.ValueSize)
+	if n, err := s.mapFile.ReadAt(value, int64(start)); err != nil {
+		return e, err
+	} else if n != int(e.hdr.ValueSize) {
+		return e, errors.Wrapf(ErrInvalidEntryHeader, "read value length %d", n)
+	}
+	e.value = value
 	return
 }
 
 func (s *segment) ForEachEntry(fn func(e entry) error) error {
-	if s.data == nil {
-		return ErrSegmentNotWritable
-	}
+	hbuf := make([]byte, EntryHeaderSize)
 	for i := uint32(SegmentHeaderSize); i < s.size; {
-		hdr, err := readEntryHeader(s.data[i : i+EntryHeaderSize])
+		if n, err := s.mapFile.ReadAt(hbuf, int64(i)); err != nil {
+			return err
+		} else if n != int(EntryHeaderSize) {
+			return errors.Wrapf(ErrInvalidEntryHeader, "read entry header length %d", n)
+		}
+		hdr, err := readEntryHeader(hbuf)
 		if err != nil {
 			return err
 		}
 		if !isValidEntryFlag(EntryFlag(hdr.Flag)) {
 			break
 		}
-		key := s.data[i+EntryHeaderSize : i+EntryHeaderSize+uint32(hdr.KeySize)]
-		value := s.data[i+EntryHeaderSize+uint32(hdr.KeySize) : i+hdr.EntrySize()]
+		start := i + EntryHeaderSize
+		key := make([]byte, hdr.KeySize)
+		if n, err := s.mapFile.ReadAt(key, int64(start)); err != nil {
+			return err
+		} else if n != int(hdr.KeySize) {
+			return errors.Wrapf(ErrInvalidEntryHeader, "read key length %d", n)
+		}
+		start += uint32(hdr.KeySize)
+		value := make([]byte, hdr.ValueSize)
+		if n, err := s.mapFile.ReadAt(value, int64(start)); err != nil {
+			return err
+		} else if n != int(hdr.ValueSize) {
+			return errors.Wrapf(ErrInvalidEntryHeader, "read value length %d", n)
+		}
 		e := createEntry(hdr.Flag, key, value)
 		if err := fn(e); err != nil {
 			return err
@@ -217,14 +256,8 @@ func (s *segment) ForEachEntry(fn func(e entry) error) error {
 
 // Close unmaps the segment.
 func (s *segment) Close() (err error) {
-	if s.data != nil {
-		if e := s.data.Unmap(); e != nil && err == nil {
-			err = e
-		}
-		s.data = nil
-	}
 
-	return err
+	return s.mapFile.Close()
 }
 
 // CanWrite returns true if segment has space to write entry data.
@@ -234,7 +267,7 @@ func (s *segment) CanWrite(e entry) bool {
 
 // Flush flushes the buffer to disk.
 func (s *segment) Flush() error {
-	return s.data.Flush()
+	return s.mapFile.Flush()
 }
 
 // parseSegmentFilename returns the id represented by the hexadecimal filename.

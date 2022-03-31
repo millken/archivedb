@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	defaultBufSize = 4096
+	defaultBufSize = 8 << 20 // 8 MB
 )
 
 type MapFile struct {
@@ -105,6 +105,7 @@ func (mf *MapFile) Write(p []byte) (int, error) {
 }
 
 func (mf *MapFile) ReadAt(p []byte, off int64) (int, error) {
+	var n int
 	if mf.data == nil {
 		return 0, errors.New("mmap: closed")
 	}
@@ -116,7 +117,13 @@ func (mf *MapFile) ReadAt(p []byte, off int64) (int, error) {
 		return 0, io.EOF
 	}
 
-	n := copy(p, mf.data[off:])
+	if off < int64(len(mf.data)) {
+		// (TODO performance) data is already in memory
+		n = copy(p, mf.data[off:])
+	} else {
+		//hit the end of the mmap
+		n = copy(p, mf.buf[off-int64(len(mf.data)):])
+	}
 	if n < len(p) {
 		n += copy(p[n:], mf.buf[:])
 	}
