@@ -2,7 +2,6 @@ package mmap
 
 import (
 	"bytes"
-	"io"
 	"io/ioutil"
 	"os"
 	"testing"
@@ -19,29 +18,23 @@ func TestMmap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m, err := OpenWithBufferSize(filename, 32)
+	f, err := os.OpenFile(filename, os.O_RDWR, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.Size() != 10 {
-		t.Fatal("invalid length")
+	mmap, err := Map(int(f.Fd()), 10)
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	//write small data
-	if n, err := m.Write([]byte("hello")); err != nil {
+	if n, err := f.Write([]byte("hello")); err != nil {
 		t.Fatal(err)
 	} else if n != 5 {
 		t.Fatal("invalid write")
-	} else if m.Size() != 10+5 {
-		t.Fatal("invalid length")
 	}
-	b := make([]byte, 5)
-	n, err := m.ReadAt(b, 10)
-	if err != nil {
-		t.Fatal(err)
-	} else if n != 5 {
-		t.Fatal("invalid read")
-	} else if !bytes.Equal(b, []byte("hello")) {
+	b := mmap.Read(0, 5)
+	if !bytes.Equal(b, []byte("hello")) {
 		t.Fatal("invalid data")
 	}
 
@@ -50,52 +43,32 @@ func TestMmap(t *testing.T) {
 	for i := range bigData {
 		bigData[i] = byte(i)
 	}
-	if n, err := m.Write(bigData); err != nil {
+	if n, err := f.Write(bigData); err != nil {
 		t.Fatal(err)
 	} else if n != 1024 {
 		t.Fatal("invalid write")
-	} else if m.Size() != 15+1024 {
-		t.Fatal("invalid length")
 	}
 
-	if err := m.Close(); err != nil {
+	if err := mmap.Close(); err != nil {
 		t.Fatal(err)
-	}
-
-	//read large data
-	m, err = Open(filename)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if m.Size() != 15+1024 {
-		t.Fatal("invalid length")
-	}
-	b = make([]byte, 1024)
-	n, err = m.ReadAt(b, 15)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 1024 {
-		t.Fatal("invalid read")
-	}
-	if !bytes.Equal(b, bigData) {
-		t.Fatal("invalid data")
-	}
-	if err := m.Close(); err != nil {
+	} else if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestOpen(t *testing.T) {
 	const filename = "mmap_test.go"
-	r, err := Open(filename)
+	r, err := os.Open(filename)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	got := make([]byte, r.Size())
-	if _, err := r.ReadAt(got, 0); err != nil && err != io.EOF {
-		t.Fatalf("ReadAt: %v", err)
+	defer r.Close()
+	fi, _ := r.Stat()
+	m, err := Map(int(r.Fd()), int(fi.Size()))
+	if err != nil {
+		t.Fatalf("Map: %v", err)
 	}
+	got := m.Read(int(0), int(fi.Size()))
 	want, err := ioutil.ReadFile(filename)
 	if err != nil {
 		t.Fatalf("ioutil.ReadFile: %v", err)

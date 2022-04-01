@@ -1,173 +1,53 @@
-//go:build linux || darwin
-// +build linux darwin
+//go:build darwin || dragonfly || freebsd || linux || nacl || netbsd || openbsd
+// +build darwin dragonfly freebsd linux nacl netbsd openbsd
 
 package mmap
 
 import (
-	"fmt"
-	"io"
-	"os"
-	"runtime"
 	"syscall"
-
-	"errors"
+	"unsafe"
 )
 
 const (
-	defaultBufSize = 8 << 20 // 8 MB
+	maxAllocSize = 1<<31 - 1
 )
 
-type MapFile struct {
-	file *os.File
-	data []byte
-	size int64
-	err  error
-	buf  []byte
-	n    int
+type MMap struct {
+	dataref []byte
+	data    *[maxAllocSize]byte
+	datasz  int
 }
 
-func (mf *MapFile) Size() int64 {
-	return mf.size
-}
-
-func (mf *MapFile) Close() error {
-	if mf.file != nil {
-		if err := mf.Flush(); err != nil {
-			return err
-		} else if err := mf.file.Close(); err != nil {
-			return err
-		}
-		mf.file = nil
-	}
-	if mf.data == nil {
+func (m *MMap) Close() error {
+	if m.dataref == nil {
 		return nil
 	}
-	data := mf.data
-	mf.data = nil
-	runtime.SetFinalizer(mf, nil)
+	data := m.dataref
+	m.dataref = nil
+	m.data = nil
+	m.datasz = 0
+	//runtime.SetFinalizer(m, nil)
 	return syscall.Munmap(data)
 }
 
-// Flush writes any buffered data to the underlying io.Writer.
-func (mf *MapFile) Flush() error {
-	if mf.err != nil {
-		return mf.err
-	}
-	if mf.n == 0 {
-		return nil
-	}
-	n, err := mf.file.Write(mf.buf[0:mf.n])
-	if n < mf.n && err == nil {
-		err = io.ErrShortWrite
-	}
-	if err != nil {
-		if n > 0 && n < mf.n {
-			copy(mf.buf[0:mf.n-n], mf.buf[n:mf.n])
-		}
-		mf.n -= n
-		mf.err = err
-		return err
-	}
-	mf.n = 0
-	return nil
+func (m *MMap) Read(off, len int) []byte {
+	return unsafeByteSlice(unsafe.Pointer(m.data), 0, off, off+len)
 }
 
-// Available returns how many bytes are unused in the buffer.
-func (mf *MapFile) Available() int { return len(mf.buf) - mf.n }
+func Map(fd int, sz int) (*MMap, error) {
 
-// Buffered returns the number of bytes that have been written into the current buffer.
-func (mf *MapFile) Buffered() int { return mf.n }
-
-func (mf *MapFile) Write(p []byte) (int, error) {
-	var nn int
-	for len(p) > mf.Available() && mf.err == nil {
-		var n int
-		if mf.Buffered() == 0 {
-			// Large write, empty buffer.
-			// Write directly from p to avoid copy.
-			n, mf.err = mf.file.Write(p)
-		} else {
-			n = copy(mf.buf[mf.n:], p)
-			mf.n += n
-			mf.Flush()
-		}
-		nn += n
-		p = p[n:]
+	if sz == 0 {
+		return &MMap{}, nil
 	}
-	if mf.err != nil {
-		return nn, mf.err
-	}
-	n := copy(mf.buf[mf.n:], p)
-	mf.n += n
-	nn += n
-	mf.size += int64(nn)
-	return nn, nil
-}
-
-func (mf *MapFile) ReadAt(p []byte, off int64) (int, error) {
-	var n int
-	if mf.data == nil {
-		return 0, errors.New("mmap: closed")
-	}
-	if off < 0 || mf.size < off {
-		return 0, fmt.Errorf("mmap: invalid ReadAt offset %d", off)
-	}
-	ps := int64(len(p))
-	if mf.size < ps+off {
-		return 0, io.EOF
-	}
-
-	if off < int64(len(mf.data)) {
-		// (TODO performance) data is already in memory
-		n = copy(p, mf.data[off:])
-	} else {
-		//hit the end of the mmap
-		n = copy(p, mf.buf[off-int64(len(mf.data)):])
-	}
-	if n < len(p) {
-		n += copy(p[n:], mf.buf[:])
-	}
-	return n, nil
-}
-func Open(path string) (*MapFile, error) {
-	return OpenWithBufferSize(path, defaultBufSize)
-}
-func OpenWithBufferSize(path string, bufSize int) (*MapFile, error) {
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	data, err := syscall.Mmap(fd, 0, sz, syscall.PROT_READ, syscall.MAP_SHARED)
 	if err != nil {
 		return nil, err
 	}
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, err
+	m := &MMap{
+		dataref: data,
+		data:    (*[maxAllocSize]byte)(unsafe.Pointer(&data[0])),
+		datasz:  sz,
 	}
-
-	size := fi.Size()
-	if size == 0 {
-		return &MapFile{}, nil
-	}
-	if size < 0 {
-		return nil, fmt.Errorf("mmap: file %q has negative size", path)
-	}
-	if size != int64(int(size)) {
-		return nil, fmt.Errorf("mmap: file %q is too large", path)
-	}
-	if _, err := f.Seek(0, io.SeekEnd); err != nil {
-		return nil, err
-	}
-	data, err := syscall.Mmap(int(f.Fd()), 0, int(size), syscall.PROT_READ, syscall.MAP_SHARED)
-	if err != nil {
-		return nil, err
-	}
-	if bufSize <= 0 {
-		bufSize = defaultBufSize
-	}
-	m := &MapFile{
-		file: f,
-		data: data,
-		buf:  make([]byte, bufSize),
-		size: size,
-	}
-	runtime.SetFinalizer(m, (*MapFile).Close)
+	//runtime.SetFinalizer(m, (*MMap).Close)
 	return m, nil
 }

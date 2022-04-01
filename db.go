@@ -150,7 +150,7 @@ func (db *DB) Put(key, value []byte) error {
 }
 
 //Put put the value of the key to the db
-func (db *DB) set(key, value []byte, flag EntryFlag) error {
+func (db *DB) set(key, value []byte, flag uint8) error {
 	var err error
 	db.mu.Lock()
 	defer db.mu.Unlock()

@@ -3,6 +3,7 @@ package archivedb
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"math/rand"
 	"os"
@@ -365,4 +366,32 @@ func MustTempDir() (string, func()) {
 		panic(fmt.Sprintf("failed to create temp dir: %v", err))
 	}
 	return dir, func() { os.RemoveAll(dir) }
+}
+
+func TestDiskWrite(t *testing.T) {
+	wg := sync.WaitGroup{}
+
+	for i := 0; i < 1000; i++ {
+		wg.Add(1)
+		go func(number int) {
+			f, err := os.OpenFile("test.file.log", os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			for j := 0; j < 1000; j++ {
+				r := strings.NewReader(fmt.Sprintf("goroutine: %d, loop: %d\n", number, j))
+				_, err = io.Copy(f, r)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			err = f.Close()
+			if err != nil {
+				t.Fatal(f)
+			}
+			wg.Done()
+		}(i)
+	}
+	wg.Wait()
 }
