@@ -66,7 +66,6 @@ func readEntryHeader(b []byte) (EntryHeader, error) {
 	if len(b) < EntryHeaderSize {
 		return EntryHeader{}, errors.Wrapf(ErrInvalidEntryHeader, "read entry header length %d", len(b))
 	}
-	fmt.Printf("%d %v", len(b), b)
 	return EntryHeader{
 		ValueSize: intconv.Uint32(b[0:4]),
 		Checksum:  intconv.Uint32(b[4:8]),
