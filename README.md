@@ -1,3 +1,9 @@
+[![Test status](https://github.com/millken/archivedb/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/millken/archivedb/actions?workflow=test)
+[![Coverage Status](https://coveralls.io/repos/github/millken/archivedb/badge.svg?branch=main)](https://coveralls.io/github/millken/archivedb?branch=main)
+[![Go Report Card](https://goreportcard.com/badge/github.com/millken/archivedb)](https://goreportcard.com/report/github.com/millken/archivedb)
+[![GoDev](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/millken/archivedb)
+[![GitHub release](https://img.shields.io/github/release/millken/archivedb.svg)](https://github.com/millken/archivedb/releases)
+
 # archivedb
 
 ArchiveDB is an embeddable, persistent and high performance Key/Value database written in pure Go.
