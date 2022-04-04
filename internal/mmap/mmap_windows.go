@@ -38,7 +38,7 @@ func openFile(filename string, fl Flag) (*File, error) {
 		view = windows.FILE_MAP_WRITE
 	}
 
-	low, high := uint32(size), uint32(size>>32)
+	low, high := uint32(size)&0xffffffff, uint32(size>>32)
 	fmap, err := windows.CreateFileMapping(windows.Handle(f.Fd()), nil, prot, high, low, nil)
 	if err != nil {
 		return nil, err
