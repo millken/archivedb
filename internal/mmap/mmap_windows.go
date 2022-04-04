@@ -65,7 +65,7 @@ func openFile(filename string, fl Flag) (*File, error) {
 // Sync commits the current contents of the file to stable storage.
 func (f *File) Sync() error {
 	if !f.wflag() {
-		return errBadFD
+		return ErrBadFD
 	}
 
 	err := windows.FlushViewOfFile(f.addr(), uintptr(len(f.data)))
