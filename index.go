@@ -8,7 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/millken/archivedb/mmap"
+	"github.com/millken/archivedb/internal/mmap"
 	"github.com/pkg/errors"
 )
 
@@ -98,18 +98,6 @@ func (hdr *indexHeader) WriteTo(w io.Writer) (n int64, err error) {
 	return buf.WriteTo(w)
 }
 
-func decodeIndexHeader(b []byte) (hdr indexHeader, err error) {
-	if len(b) < len(IndexMagic) {
-		return hdr, errors.Wrap(ErrInvalidIndex, "invalid index header")
-	}
-	magic := b[0:len(IndexMagic)]
-	if !bytes.Equal(magic, []byte(IndexMagic)) {
-		return hdr, errors.Wrap(ErrInvalidIndexVersion, "invalid magic")
-	}
-	hdr.Version = b[len(IndexMagic)]
-	return hdr, nil
-}
-
 type index struct {
 	path    string
 	mmap    *mmap.File
@@ -162,8 +150,8 @@ func openIndex(filePath string) (*index, error) {
 }
 
 func (idx *index) load(size int64) error {
-	for i := IndexHeaderSize; i < int(size); i += indexItemSize {
-		b, err := idx.mmap.ReadOff(i, indexItemSize)
+	for idx.c = IndexHeaderSize; idx.c < idx.mmap.Len(); {
+		b, err := idx.mmap.ReadOff(idx.c, indexItemSize)
 		if err != nil {
 			return errors.Wrap(err, "failed to read index item")
 		}
@@ -202,19 +190,20 @@ func (idx *index) Insert(k uint64, segmentID uint16, off uint32) error {
 	intconv.PutUint64(b[0:8], k)
 	intconv.PutUint16(b[8:10], segmentID)
 	intconv.PutUint32(b[10:14], off)
-	if idx.c > (indexBlock/indexItemSize) && idx.c%(indexBlock/indexItemSize) == 0 {
+	c := indexBlock / indexItemSize
+	if idx.c > c && idx.c%c == 0 {
 		if err := idx.Close(); err != nil {
 			return err
 		} else if os.Truncate(idx.path, int64(idx.c+indexBlock)) != nil {
-			return errors.Wrap(err, "failed to truncate index file")
+			return err
 		} else if idx.mmap, err = mmap.OpenFile(idx.path, mmap.Read|mmap.Write); err != nil {
-			return errors.Wrap(err, "failed to mmap index file")
+			return err
 		}
 	}
 	if n, err := idx.mmap.WriteAt(b, int64(idx.c)); err != nil {
-		return errors.Wrap(err, "failed to write index item")
+		return err
 	} else if n != indexItemSize {
-		return errors.Wrap(err, "failed to write index item")
+		return err
 	} else if err := idx.set(k, segmentID, off); err != nil {
 		return err
 	}
@@ -229,7 +218,7 @@ func (idx *index) Get(k uint64) (item, bool) {
 
 func (idx *index) Flush() error {
 	if err := idx.mmap.Sync(); err != nil {
-		return errors.Wrap(err, "failed to write index")
+		return err
 	}
 	return nil
 }
@@ -238,7 +227,7 @@ func (idx *index) Close() error {
 	if err := idx.Flush(); err != nil {
 		return err
 	} else if err := idx.mmap.Close(); err != nil {
-		return errors.Wrap(err, "failed to close index mmap")
+		return err
 	}
 	return nil
 }

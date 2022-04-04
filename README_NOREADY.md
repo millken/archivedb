@@ -38,34 +38,34 @@ $ go test -benchmem -run=^$ -bench ^BenchmarkDB
 goos: darwin
 goarch: arm64
 pkg: github.com/millken/archivedb
-BenchmarkDB_Put/128BNoSync-8             5812340               175.7 ns/op       728.50 MB/s          32 B/op          2 allocs/op
-BenchmarkDB_Put/256BNoSync-8             4740873               249.0 ns/op      1028.05 MB/s          32 B/op          2 allocs/op
-BenchmarkDB_Put/1KNoSync-8               1763916               644.7 ns/op      1588.41 MB/s          32 B/op          2 allocs/op
-BenchmarkDB_Put/2KNoSync-8               1000000              1122 ns/op        1826.03 MB/s          32 B/op          2 allocs/op
-BenchmarkDB_Put/4KNoSync-8                637262              2160 ns/op        1895.88 MB/s          32 B/op          2 allocs/op
-BenchmarkDB_Put/8KNoSync-8                218953              4923 ns/op        1664.09 MB/s          32 B/op          2 allocs/op
-BenchmarkDB_Put/16KNoSync-8                90084             14746 ns/op        1111.10 MB/s          32 B/op          2 allocs/op
-BenchmarkDB_Put/32KNoSync-8                38570             36176 ns/op         905.80 MB/s          32 B/op          2 allocs/op
-BenchmarkDB_Put/128BSync-8                 27231             47542 ns/op           2.69 MB/s          32 B/op          2 allocs/op
-BenchmarkDB_Put/256BSync-8                 23424             57431 ns/op           4.46 MB/s          32 B/op          2 allocs/op
-BenchmarkDB_Put/1KSync-8                   16497            220525 ns/op           4.64 MB/s          32 B/op          2 allocs/op
-BenchmarkDB_Put/2KSync-8                   10000            123557 ns/op          16.58 MB/s          32 B/op          2 allocs/op
-BenchmarkDB_Put/4KSync-8                    7692            170008 ns/op          24.09 MB/s          32 B/op          2 allocs/op
-BenchmarkDB_Put/8KSync-8                    5910            244692 ns/op          33.48 MB/s          32 B/op          2 allocs/op
-BenchmarkDB_Put/16KSync-8                   4047            338585 ns/op          48.39 MB/s          32 B/op          2 allocs/op
-BenchmarkDB_Put/32KSync-8                   4069            256939 ns/op         127.53 MB/s          32 B/op          2 allocs/op
-BenchmarkDB_Get/128B-8                  16133332                74.65 ns/op     1714.63 MB/s           0 B/op          0 allocs/op
-BenchmarkDB_Get/256B-8                  14335069                84.11 ns/op     3043.46 MB/s           0 B/op          0 allocs/op
-BenchmarkDB_Get/512B-8                  10319188               116.9 ns/op      4380.53 MB/s           0 B/op          0 allocs/op
-BenchmarkDB_Get/1K-8                     5833773               205.9 ns/op      4973.34 MB/s           0 B/op          0 allocs/op
-BenchmarkDB_Get/2K-8                     3458556               348.8 ns/op      5870.92 MB/s           0 B/op          0 allocs/op
-BenchmarkDB_Get/4K-8                     1864291               637.6 ns/op      6423.74 MB/s           0 B/op          0 allocs/op
-BenchmarkDB_Get/8K-8                      962701              1275 ns/op        6427.36 MB/s           0 B/op          0 allocs/op
-BenchmarkDB_Get/16K-8                     496244              2402 ns/op        6820.14 MB/s           0 B/op          0 allocs/op
-BenchmarkDB_Get/32K-8                     252752              4756 ns/op        6889.57 MB/s           0 B/op          0 allocs/op
-BenchmarkDB_Delete-8                     8119098               149.8 ns/op            32 B/op          2 allocs/op
+BenchmarkDB_Put/128BSync-8                 27298             46144 ns/op           2.77 MB/s          16 B/op          1 allocs/op
+BenchmarkDB_Put/256BSync-8                 23760             57195 ns/op           4.48 MB/s          16 B/op          1 allocs/op
+BenchmarkDB_Put/1KSync-8                   16921            103651 ns/op           9.88 MB/s          16 B/op          1 allocs/op
+BenchmarkDB_Put/2KSync-8                   10000            131920 ns/op          15.52 MB/s          16 B/op          1 allocs/op
+BenchmarkDB_Put/4KSync-8                    7287            179634 ns/op          22.80 MB/s          16 B/op          1 allocs/op
+BenchmarkDB_Put/8KSync-8                    5314            242691 ns/op          33.75 MB/s          16 B/op          1 allocs/op
+BenchmarkDB_Put/16KSync-8                   4059            344744 ns/op          47.53 MB/s          16 B/op          1 allocs/op
+BenchmarkDB_Put/32KSync-8                   2907            473765 ns/op          69.17 MB/s          16 B/op          1 allocs/op
+BenchmarkDB_Put/128BNoSync-8             7369100               168.0 ns/op       761.98 MB/s          16 B/op          1 allocs/op
+BenchmarkDB_Put/256BNoSync-8             5179245               258.5 ns/op       990.28 MB/s          16 B/op          1 allocs/op
+BenchmarkDB_Put/1KNoSync-8               1714375               747.3 ns/op      1370.31 MB/s          16 B/op          1 allocs/op
+BenchmarkDB_Put/2KNoSync-8               1005616              1268 ns/op        1615.51 MB/s          16 B/op          1 allocs/op
+BenchmarkDB_Put/4KNoSync-8                488199              2372 ns/op        1727.12 MB/s          16 B/op          1 allocs/op
+BenchmarkDB_Put/8KNoSync-8                267494              6651 ns/op        1231.69 MB/s          16 B/op          1 allocs/op
+BenchmarkDB_Put/16KNoSync-8                79537             16994 ns/op         964.10 MB/s          16 B/op          1 allocs/op
+BenchmarkDB_Put/32KNoSync-8                85688             50266 ns/op         651.89 MB/s          16 B/op          1 allocs/op
+BenchmarkDB_Get/128B-8                  16074962                74.27 ns/op     1723.52 MB/s           0 B/op          0 allocs/op
+BenchmarkDB_Get/256B-8                  14393212                83.70 ns/op     3058.62 MB/s           0 B/op          0 allocs/op
+BenchmarkDB_Get/512B-8                  10312220               120.6 ns/op      4245.71 MB/s           0 B/op          0 allocs/op
+BenchmarkDB_Get/1K-8                     5814404               205.2 ns/op      4991.29 MB/s           0 B/op          0 allocs/op
+BenchmarkDB_Get/2K-8                     3458854               346.5 ns/op      5911.35 MB/s           0 B/op          0 allocs/op
+BenchmarkDB_Get/4K-8                     1886884               636.3 ns/op      6436.78 MB/s           0 B/op          0 allocs/op
+BenchmarkDB_Get/8K-8                      969164              1234 ns/op        6640.20 MB/s           0 B/op          0 allocs/op
+BenchmarkDB_Get/16K-8                     491949              2397 ns/op        6833.90 MB/s           0 B/op          0 allocs/op
+BenchmarkDB_Get/32K-8                     253663              4746 ns/op        6904.80 MB/s           0 B/op          0 allocs/op
+BenchmarkDB_Delete-8                     7586367               160.7 ns/op            16 B/op          1 allocs/op
 PASS
-ok      github.com/millken/archivedb    45.040s
+ok      github.com/millken/archivedb    47.461s
 ```
 
 ## License

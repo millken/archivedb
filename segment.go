@@ -7,7 +7,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/millken/archivedb/mmap"
+	"github.com/millken/archivedb/internal/mmap"
 	"github.com/pkg/errors"
 )
 
@@ -143,7 +143,7 @@ func (s *segment) Open() error {
 		if n, err := s.mmap.Seek(int64(s.size), io.SeekStart); err != nil {
 			return err
 		} else if n != int64(s.size) {
-			return errors.New("invalid segment size")
+			return ErrInvalidSegment
 		}
 		return nil
 	}(); err != nil {
@@ -190,13 +190,8 @@ func (s *segment) ReadEntry(off uint32) (e entry, err error) {
 	if off >= s.size {
 		return e, errors.Wrap(ErrInvalidOffset, "request offset exceeds segment size")
 	}
-	buf := make([]byte, EntryHeaderSize)
-	if n, err := s.mmap.ReadAt(buf, int64(off)); err != nil {
-		return e, err
-	} else if n != int(EntryHeaderSize) {
-		return e, errors.Wrapf(ErrInvalidEntryHeader, "read entry header length %d", n)
-	}
-	buf, err = s.mmap.ReadOff(int(off), EntryHeaderSize)
+
+	buf, err := s.mmap.ReadOff(int(off), EntryHeaderSize)
 	if err != nil {
 		return e, err
 	}
@@ -208,23 +203,11 @@ func (s *segment) ReadEntry(off uint32) (e entry, err error) {
 		return e, errors.Wrap(ErrInvalidOffset, "invalid entry flag")
 	}
 	start := off + EntryHeaderSize
-	// key := make([]byte, e.hdr.KeySize)
-	// if n, err := s.mapFile.ReadAt(key, int64(start)); err != nil {
-	// 	return e, err
-	// } else if n != int(e.hdr.KeySize) {
-	// 	return e, errors.Wrapf(ErrInvalidEntryHeader, "read key length %d", n)
-	// }
 	e.key, err = s.mmap.ReadOff(int(start), int(e.hdr.KeySize))
 	if err != nil {
 		return e, err
 	}
 	start += uint32(e.hdr.KeySize)
-	// // value := make([]byte, e.hdr.ValueSize)
-	// // if n, err := s.mapFile.ReadAt(value, int64(start)); err != nil {
-	// // 	return e, err
-	// // } else if n != int(e.hdr.ValueSize) {
-	// // 	return e, errors.Wrapf(ErrInvalidEntryHeader, "read value length %d", n)
-	// // }
 	e.value, err = s.mmap.ReadOff(int(start), int(e.hdr.ValueSize))
 	if err != nil {
 		return e, err
