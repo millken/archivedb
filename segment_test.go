@@ -31,7 +31,7 @@ func TestSegment(t *testing.T) {
 	}
 
 	// Write another entry that is too large for the remaining segment space.
-	if err := segment.WriteEntry(createEntry(EntryInsertFlag, []byte("foo2"), bytes.Repeat([]byte("n"), 3*(1<<30)))); err != ErrSegmentNotWritable {
+	if err := segment.WriteEntry(createEntry(EntryInsertFlag, []byte("foo2"), bytes.Repeat([]byte("n"), (1<<30)))); err != ErrSegmentNotWritable {
 		t.Fatalf("unexpected error: %v", err)
 	}
 

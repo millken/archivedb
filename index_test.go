@@ -11,6 +11,9 @@ import (
 func TestIndex(t *testing.T) {
 	require := require.New(t)
 	testFile := "index001.test"
+	if err := os.Remove(testFile); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
 	defer os.Remove(testFile)
 	idx, err := openIndex(testFile)
 	require.NoError(err)

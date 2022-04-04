@@ -17,3 +17,4 @@ _bench*
 *.db 
 *.idx
 .DS_Store
+tmp/
