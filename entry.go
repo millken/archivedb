@@ -43,6 +43,7 @@ type entry struct {
 func (hdr EntryHeader) EntrySize() uint32 {
 	return EntryHeaderSize + uint32(hdr.KeySize) + hdr.ValueSize
 }
+
 func (e *EntryHeader) Encode() []byte {
 	var b [EntryHeaderSize]byte
 	intconv.PutUint32(b[0:4], e.ValueSize)

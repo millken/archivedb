@@ -59,17 +59,17 @@ func (b *bucket) Init() {
 
 func (b *bucket) Reset() {
 	b.mu.Lock()
+	defer b.mu.Unlock()
 	bm := b.items
 	for k := range bm {
-		delete(bm, k)
+		delete(b.items, k)
 	}
-	b.mu.Unlock()
 }
 
-func (b *bucket) Set(k uint64, item item) error {
+func (b *bucket) Set(k uint64, it item) error {
 	b.mu.Lock()
-	b.items[k] = item
-	b.mu.Unlock()
+	defer b.mu.Unlock()
+	b.items[k] = it
 	return nil
 }
 
