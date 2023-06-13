@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"unsafe"
 
 	"github.com/millken/archivedb/internal/mmap"
 	"github.com/pkg/errors"
@@ -25,32 +26,32 @@ var (
 	ErrSegmentNotWritable    = errors.New("segment not writable")
 )
 
-type segmentHeader struct {
+type segmentMeta struct {
 	Version uint8
 }
 
-func newSegmentHeader() segmentHeader {
-	return segmentHeader{Version: SegmentVersion}
+func newSegmentMeta() segmentMeta {
+	return segmentMeta{Version: SegmentVersion}
 }
 
 // WriteTo writes the header to w.
-func (hdr *segmentHeader) WriteTo(w io.Writer) (n int64, err error) {
+func (hdr *segmentMeta) WriteTo(w io.Writer) (n int64, err error) {
 	var buf bytes.Buffer
 	buf.WriteString(SegmentMagic)
 	binary.Write(&buf, binary.BigEndian, hdr.Version)
 	return buf.WriteTo(w)
 }
 
-func decodeSegmentHeader(b []byte) (hdr segmentHeader, err error) {
+func decodeSegmentMeta(b []byte) (meta segmentMeta, err error) {
 	if len(b) < SegmentHeaderSize {
-		return hdr, errors.Wrap(ErrInvalidSegment, "invalid segment header")
+		return meta, errors.Wrap(ErrInvalidSegment, "invalid segment meta")
 	}
 	magic := b[0:len(SegmentMagic)]
 	if !bytes.Equal(magic, []byte(SegmentMagic)) {
-		return hdr, errors.Wrap(ErrInvalidSegment, "invalid magic")
+		return meta, errors.Wrap(ErrInvalidSegment, "invalid magic")
 	}
-	hdr.Version = b[len(SegmentMagic)]
-	return hdr, nil
+	meta.Version = b[len(SegmentMagic)]
+	return meta, nil
 }
 
 type segment struct {
@@ -78,7 +79,7 @@ func createSegment(id uint16, path string) (*segment, error) {
 	defer f.Close()
 
 	// Write header to file and close.
-	hdr := newSegmentHeader()
+	hdr := newSegmentMeta()
 	if _, err := hdr.WriteTo(f); err != nil {
 		return nil, err
 	} else if err := f.Sync(); err != nil {
@@ -120,25 +121,22 @@ func (s *segment) Open() error {
 		if err != nil {
 			return err
 		}
-		hdr, err := decodeSegmentHeader(buf)
+		meta, err := decodeSegmentMeta(buf)
 		if err != nil {
 			return err
-		} else if hdr.Version != SegmentVersion {
+		} else if meta.Version != SegmentVersion {
 			return ErrInvalidSegmentVersion
 		}
 		for s.size = uint32(SegmentHeaderSize); s.size < uint32(s.mmap.Len()); {
-			buf, err := s.mmap.ReadOff(int(s.size), EntryHeaderSize)
+			buf, err := s.mmap.ReadOff(int(s.size), hdrSize)
 			if err != nil {
 				return err
 			}
-			hdr, err := readEntryHeader(buf)
-			if err != nil {
-				return err
-			}
-			if !isValidEntryFlag(hdr.Flag) {
+			h := hdr(buf)
+			if !h.getFlag().isEntryValid() {
 				break
 			}
-			s.size += hdr.EntrySize()
+			s.size += h.entrySize()
 		}
 		if n, err := s.mmap.Seek(int64(s.size), io.SeekStart); err != nil {
 			return err
@@ -154,16 +152,16 @@ func (s *segment) Open() error {
 	return nil
 }
 
-func (s *segment) WriteEntry(e entry) error {
+func (s *segment) WriteEntry(e *entry) error {
 	if !s.CanWrite(e) {
 		return ErrSegmentNotWritable
 	}
 
 	// Write entry header.
-	n, err := s.mmap.Write(e.hdr.Encode())
+	n, err := s.mmap.Write(e.hdr[:])
 	if err != nil {
 		return err
-	} else if n != EntryHeaderSize {
+	} else if n != hdrSize {
 		return errors.Wrapf(ErrInvalidEntryHeader, "write entry header length %d", n)
 	}
 	s.size += uint32(n)
@@ -171,7 +169,7 @@ func (s *segment) WriteEntry(e entry) error {
 	n, err = s.mmap.Write(e.key)
 	if err != nil {
 		return err
-	} else if n != int(e.hdr.KeySize) {
+	} else if n != int(e.hdr.getKeySize()) {
 		return errors.Wrapf(ErrInvalidEntryHeader, "write key length %d", n)
 	}
 	s.size += uint32(n)
@@ -179,76 +177,78 @@ func (s *segment) WriteEntry(e entry) error {
 	n, err = s.mmap.Write(e.value)
 	if err != nil {
 		return err
-	} else if n != int(e.hdr.ValueSize) {
+	} else if n != int(e.hdr.getValueSize()) {
 		return errors.Wrapf(ErrInvalidEntryHeader, "write value length %d", n)
 	}
 	s.size += uint32(n)
 	return nil
 }
 
-func (s *segment) ReadEntry(off uint32) (e entry, err error) {
+func (s *segment) ReadEntry(off uint32) (*entry, error) {
+	e := &entry{}
 	if off >= s.size {
 		return e, errors.Wrap(ErrInvalidOffset, "request offset exceeds segment size")
 	}
 
-	buf, err := s.mmap.ReadOff(int(off), EntryHeaderSize)
+	buf, err := s.mmap.ReadOff(int(off), hdrSize)
 	if err != nil {
 		return e, err
 	}
-	e.hdr, err = readEntryHeader(buf)
-	if err != nil {
-		return e, err
-	}
-	if !isValidEntryFlag(e.hdr.Flag) {
+
+	e.hdr = (*hdr)(unsafe.Pointer(&buf[0]))
+	if !e.hdr.getFlag().isEntryValid() {
 		return e, errors.Wrap(ErrInvalidOffset, "invalid entry flag")
 	}
-	start := off + EntryHeaderSize
-	e.key, err = s.mmap.ReadOff(int(start), int(e.hdr.KeySize))
+	start := off + hdrSize
+	e.key, err = s.mmap.ReadOff(int(start), int(e.hdr.getKeySize()))
 	if err != nil {
 		return e, err
 	}
-	start += uint32(e.hdr.KeySize)
-	e.value, err = s.mmap.ReadOff(int(start), int(e.hdr.ValueSize))
+	start += uint32(e.hdr.getKeySize())
+	e.value, err = s.mmap.ReadOff(int(start), int(e.hdr.getValueSize()))
 	if err != nil {
 		return e, err
 	}
-	return
+	return e, nil
 }
 
-func (s *segment) ForEachEntry(fn func(e entry) error) error {
-	hbuf := make([]byte, EntryHeaderSize)
+func (s *segment) ForEachEntry(fn func(e *entry) error) error {
+	var h hdr
 	for i := uint32(SegmentHeaderSize); i < s.size; {
-		if n, err := s.mmap.ReadAt(hbuf, int64(i)); err != nil {
+		if n, err := s.mmap.ReadAt(h[:], int64(i)); err != nil {
 			return err
-		} else if n != int(EntryHeaderSize) {
+		} else if n != int(hdrSize) {
 			return errors.Wrapf(ErrInvalidEntryHeader, "read entry header length %d", n)
 		}
-		hdr, err := readEntryHeader(hbuf)
-		if err != nil {
-			return err
-		}
-		if !isValidEntryFlag(hdr.Flag) {
+
+		if !h.getFlag().isEntryValid() {
 			break
 		}
-		start := i + EntryHeaderSize
-		key := make([]byte, hdr.KeySize)
+		start := i + hdrSize
+		keySize := h.getKeySize()
+		key := make([]byte, keySize)
 		if n, err := s.mmap.ReadAt(key, int64(start)); err != nil {
 			return err
-		} else if n != int(hdr.KeySize) {
+		} else if n != int(keySize) {
 			return errors.Wrapf(ErrInvalidEntryHeader, "read key length %d", n)
 		}
-		start += uint32(hdr.KeySize)
-		value := make([]byte, hdr.ValueSize)
+		start += uint32(keySize)
+		valueSize := h.getValueSize()
+		value := make([]byte, valueSize)
 		if n, err := s.mmap.ReadAt(value, int64(start)); err != nil {
 			return err
-		} else if n != int(hdr.ValueSize) {
+		} else if n != int(valueSize) {
 			return errors.Wrapf(ErrInvalidEntryHeader, "read value length %d", n)
 		}
-		e := createEntry(hdr.Flag, key, value)
+		e := &entry{
+			hdr:   &h,
+			key:   key,
+			value: value,
+		}
 		if err := fn(e); err != nil {
 			return err
 		}
-		i += hdr.EntrySize()
+		i += h.entrySize()
 	}
 	return nil
 }
@@ -260,7 +260,7 @@ func (s *segment) Close() (err error) {
 }
 
 // CanWrite returns true if segment has space to write entry data.
-func (s *segment) CanWrite(e entry) bool {
+func (s *segment) CanWrite(e *entry) bool {
 	return s.size+e.Size() <= SegmentSize
 }
 

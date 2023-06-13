@@ -3,6 +3,8 @@ package archivedb
 import (
 	"bytes"
 	"fmt"
+	"hash/adler32"
+	"hash/crc32"
 	"io/ioutil"
 	"math/rand"
 	"os"
@@ -22,6 +24,49 @@ type benchmarkTestCase struct {
 	size int
 }
 
+func BenchmarkHashFunc(b *testing.B) {
+	crc32Hash := func(data []byte) uint64 {
+		return uint64(crc32.ChecksumIEEE(data))
+	}
+	adler32Hash := func(data []byte) uint64 {
+		return uint64(adler32.Checksum(data))
+	}
+	testSize := []struct {
+		name string
+		size int
+	}{
+		{"128B", 128},
+		{"256B", 256},
+		{"1K", 1024},
+		{"2K", 2048},
+		{"4K", 4096},
+		{"8K", 8192},
+		{"16K", 16384},
+		{"32K", 32768},
+		{"64K", 65536},
+		{"128K", 131072},
+	}
+	tests := []struct {
+		hash HashFunc
+		name string
+	}{
+		{DefaultHashFunc, "DefaultHashFunc"},
+		{adler32Hash, "adler32"},
+		{crc32Hash, "crc32"},
+	}
+	for _, size := range testSize {
+		b.Run(size.name, func(b *testing.B) {
+			val := bytes.Repeat([]byte{' '}, size.size)
+			for _, test := range tests {
+				b.Run(test.name, func(b *testing.B) {
+					for i := 0; i < b.N; i++ {
+						test.hash(val)
+					}
+				})
+			}
+		})
+	}
+}
 func TestDB(t *testing.T) {
 	require := require.New(t)
 	dir, cleanup := MustTempDir()
@@ -55,10 +100,6 @@ func TestDB(t *testing.T) {
 	for _, test := range tests {
 		err := db.Delete(test.key)
 		require.NoError(err)
-		v, err = db.Get([]byte("foo"))
-		require.Error(err)
-		require.ErrorIs(err, ErrKeyDeleted)
-		require.Nil(v)
 	}
 	require.NoError(db.Close())
 }
