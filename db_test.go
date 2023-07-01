@@ -3,8 +3,6 @@ package archivedb
 import (
 	"bytes"
 	"fmt"
-	"hash/adler32"
-	"hash/crc32"
 	"io/ioutil"
 	"math/rand"
 	"os"
@@ -24,49 +22,33 @@ type benchmarkTestCase struct {
 	size int
 }
 
-func BenchmarkHashFunc(b *testing.B) {
-	crc32Hash := func(data []byte) uint64 {
-		return uint64(crc32.ChecksumIEEE(data))
+func TestDB_Reopen(t *testing.T) {
+	require := require.New(t)
+	dir, cleanup := MustTempDir()
+	defer cleanup()
+	db, err := Open(dir)
+	require.NoError(err)
+	require.NotNil(db)
+
+	numKeys := 1000000
+	for i := 0; i < numKeys; i++ {
+		key := []byte(fmt.Sprintf("%016d", i))
+		value := []byte(fmt.Sprintf("%d", i))
+		err = db.Put(key, value)
+		require.NoError(err)
 	}
-	adler32Hash := func(data []byte) uint64 {
-		return uint64(adler32.Checksum(data))
-	}
-	testSize := []struct {
-		name string
-		size int
-	}{
-		{"128B", 128},
-		{"256B", 256},
-		{"1K", 1024},
-		{"2K", 2048},
-		{"4K", 4096},
-		{"8K", 8192},
-		{"16K", 16384},
-		{"32K", 32768},
-		{"64K", 65536},
-		{"128K", 131072},
-	}
-	tests := []struct {
-		hash HashFunc
-		name string
-	}{
-		{DefaultHashFunc, "DefaultHashFunc"},
-		{adler32Hash, "adler32"},
-		{crc32Hash, "crc32"},
-	}
-	for _, size := range testSize {
-		b.Run(size.name, func(b *testing.B) {
-			val := bytes.Repeat([]byte{' '}, size.size)
-			for _, test := range tests {
-				b.Run(test.name, func(b *testing.B) {
-					for i := 0; i < b.N; i++ {
-						test.hash(val)
-					}
-				})
-			}
-		})
+	require.NoError(db.Close())
+	db, err = Open(dir)
+	require.NoError(err)
+	require.NotNil(db)
+	for i := 0; i < numKeys; i++ {
+		key := []byte(fmt.Sprintf("%016d", i))
+		value, err := db.Get(key)
+		require.NoError(err, "key: %s", key)
+		require.Equal([]byte(fmt.Sprintf("%d", i)), value)
 	}
 }
+
 func TestDB(t *testing.T) {
 	require := require.New(t)
 	dir, cleanup := MustTempDir()

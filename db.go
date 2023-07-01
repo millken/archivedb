@@ -6,9 +6,10 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 
-	art "github.com/WenyXu/sync-adaptive-radix-tree"
+	"github.com/millken/archivedb/internal/radixtree"
 	"github.com/pkg/errors"
 )
 
@@ -35,19 +36,19 @@ var (
 type DB struct {
 	path     string
 	opts     *option
-	index    art.Tree[*index]
+	index    *radixtree.Tree[*index]
 	segments []*segment
 	mu       sync.RWMutex
 }
 
 func Open(path string, options ...Option) (db *DB, err error) {
 	opts := &option{
-		fsync:    false,
-		hashFunc: DefaultHashFunc,
+		fsync: false,
 	}
 	db = &DB{
-		path: path,
-		opts: opts,
+		path:  path,
+		opts:  opts,
+		index: radixtree.New[*index](),
 	}
 	// Create path if it doesn't exist.
 	if err := os.MkdirAll(filepath.Join(path), 0777); err != nil {
@@ -65,9 +66,9 @@ func Open(path string, options ...Option) (db *DB, err error) {
 			return err
 		}
 
-		//  if err := db.index.Recover(db.segments); err != nil {
-		// 	return err
-		// }
+		if err := loadIndexes(db.index, db.segments); err != nil {
+			return err
+		}
 
 		return nil
 	}(); err != nil {
@@ -94,6 +95,9 @@ func (db *DB) openSegments() error {
 			return err
 		}
 		db.segments = append(db.segments, segment)
+		sort.Slice(db.segments, func(i, j int) bool {
+			return db.segments[i].id < db.segments[j].id
+		})
 	}
 	// Create initial segment if none exist.
 	if len(db.segments) == 0 {
@@ -163,7 +167,7 @@ func (db *DB) set(key, value []byte, flag flag) error {
 		return err
 	}
 	offset := segment.Size() - entry.Size()
-	db.index.Insert(key, &index{
+	db.index.Put(key, &index{
 		seg: segment.id,
 		off: offset,
 	})
@@ -182,7 +186,7 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	if err := validateKey(key); err != nil {
 		return nil, err
 	}
-	idx, found := db.index.Search(key)
+	idx, found := db.index.Get(key)
 	if !found {
 		return nil, ErrKeyNotFound
 	}
